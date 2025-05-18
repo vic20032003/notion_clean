@@ -1,21 +1,24 @@
 import os
 import requests
-from openai import OpenAI
-
-client = OpenAI(api_key=OPENAI_API_KEY)
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
-from dotenv import load_dotenv
 from typing import Optional
+from openai import OpenAI
 
-# ✅ Load environment variables
+# ✅ Load environment variables first
 load_dotenv()
 
+# ✅ Access environment variables
 NOTION_TOKEN = os.getenv("NOTION_TOKEN")
 NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
+# ✅ Now it's safe to initialize OpenAI client
+client = OpenAI(api_key=OPENAI_API_KEY)
+
+# ✅ Telegram API base URL
 TELEGRAM_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
 # ✅ Debug print
