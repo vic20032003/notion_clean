@@ -1,6 +1,8 @@
 import os
 import requests
-import openai
+from openai import OpenAI
+
+client = OpenAI(api_key=OPENAI_API_KEY)
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 from dotenv import load_dotenv
@@ -15,7 +17,6 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 TELEGRAM_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
-openai.api_key = OPENAI_API_KEY
 
 # ✅ Debug print
 print("Using DB:", NOTION_DATABASE_ID)
@@ -93,11 +94,9 @@ async def telegram_webhook(request: Request):
         return {"ok": False, "error": "Empty or invalid Telegram message payload"}
 
     try:
-        response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=[{"role": "user", "content": text}]
-        )
-        gpt_reply = response.choices[0].message["content"]
+        response = client.chat.completions.create(model="gpt-3.5-turbo",
+        messages=[{"role": "user", "content": text}])
+        gpt_reply = response.choices[0].message.content
     except Exception as e:
         print("❌ GPT error:", str(e))
         gpt_reply = "⚠️ I'm having trouble thinking right now. Try again in a moment!"
