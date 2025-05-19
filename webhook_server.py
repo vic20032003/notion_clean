@@ -84,7 +84,7 @@ async def receive_task(payload: TaskPayload):
 
     return {"status": "Task created ✅", "notion_response": res.json()}
 
-# ✅ Telegram webhook with GPT reply
+# ✅ Telegram webhook with GPT-4 Turbo reply
 @app.post("/telegram")
 async def telegram_webhook(request: Request):
     body = await request.json()
@@ -97,8 +97,10 @@ async def telegram_webhook(request: Request):
         return {"ok": False, "error": "Empty or invalid Telegram message payload"}
 
     try:
-        response = client.chat.completions.create(model="gpt-3.5-turbo",
-        messages=[{"role": "user", "content": text}])
+        response = client.chat.completions.create(
+            model="gpt-4-turbo",
+            messages=[{"role": "user", "content": text}]
+        )
         gpt_reply = response.choices[0].message.content
     except Exception as e:
         print("❌ GPT error:", str(e))
@@ -109,7 +111,11 @@ async def telegram_webhook(request: Request):
         "text": gpt_reply
     }
 
-    requests.post(f"{TELEGRAM_URL}/sendMessage", json=reply)
+    try:
+        requests.post(f"{TELEGRAM_URL}/sendMessage", json=reply, timeout=10)
+    except Exception as e:
+        print("❌ Telegram send error:", str(e))
+
     return {"ok": True}
 
 # ✅ Root GET/HEAD route
