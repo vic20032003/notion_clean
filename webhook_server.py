@@ -5,6 +5,7 @@ from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 from typing import Optional
 from openai import OpenAI
+from collections import deque
 
 # ✅ Load environment variables first
 load_dotenv()
@@ -15,7 +16,7 @@ NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-# ✅ Now it's safe to initialize OpenAI client
+# ✅ Initialize OpenAI client
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 # ✅ Telegram API base URL
@@ -27,7 +28,11 @@ print("Using Token:", NOTION_TOKEN[:8], "...")
 print("Using Telegram:", TELEGRAM_TOKEN[:8], "...")
 print("Using OpenAI:", OPENAI_API_KEY[:8], "...")
 
+# ✅ FastAPI app
 app = FastAPI()
+
+# ✅ In-memory task history
+message_history = deque(maxlen=10)  # Stores last 10 tasks
 
 # ✅ Task model
 class TaskPayload(BaseModel):
@@ -35,11 +40,19 @@ class TaskPayload(BaseModel):
     notes: str = ""
     date: Optional[str] = None
 
-# ✅ Create Notion task
+# ✅ Create Notion task + store history
 @app.post("/task")
 async def receive_task(payload: TaskPayload):
     print("✅ Received POST /task")
     print("Payload received:", payload.dict())
+
+    # Store in memory
+    message_history.append({
+        "title": payload.title,
+        "notes": payload.notes,
+        "date": payload.date
+    })
+    print("📜 Message History:", list(message_history))
 
     notion_url = "https://api.notion.com/v1/pages"
     headers = {
@@ -82,7 +95,16 @@ async def receive_task(payload: TaskPayload):
     except requests.exceptions.RequestException as e:
         raise HTTPException(status_code=500, detail=f"Notion error: {str(e)}")
 
-    return {"status": "Task created ✅", "notion_response": res.json()}
+    return {
+        "status": "Task created ✅",
+        "notion_response": res.json(),
+        "history": list(message_history)
+    }
+
+# ✅ Fetch task history
+@app.get("/history")
+async def get_history():
+    return {"history": list(message_history)}
 
 # ✅ Telegram webhook with GPT-4 Turbo reply
 @app.post("/telegram")
