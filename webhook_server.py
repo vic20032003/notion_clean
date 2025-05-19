@@ -5,21 +5,21 @@ from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 from typing import Optional
 from openai import OpenAI
-from collections import deque
+import redis
 
-# ✅ Load environment variables first
+# ✅ Load environment variables
 load_dotenv()
 
-# ✅ Access environment variables
+# ✅ Environment config
 NOTION_TOKEN = os.getenv("NOTION_TOKEN")
 NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 
-# ✅ Initialize OpenAI client
+# ✅ Clients
 client = OpenAI(api_key=OPENAI_API_KEY)
-
-# ✅ Telegram API base URL
+redis_client = redis.Redis(host=REDIS_HOST, port=6379, decode_responses=True)
 TELEGRAM_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
 # ✅ Debug print
@@ -28,85 +28,50 @@ print("Using Token:", NOTION_TOKEN[:8], "...")
 print("Using Telegram:", TELEGRAM_TOKEN[:8], "...")
 print("Using OpenAI:", OPENAI_API_KEY[:8], "...")
 
-# ✅ FastAPI app
 app = FastAPI()
 
-# ✅ In-memory task history
-message_history = deque(maxlen=10)  # Stores last 10 tasks
-
-# ✅ Task model
 class TaskPayload(BaseModel):
     title: str
     notes: str = ""
     date: Optional[str] = None
 
-# ✅ Create Notion task + store history
-@app.post("/task")
-async def receive_task(payload: TaskPayload):
-    print("✅ Received POST /task")
-    print("Payload received:", payload.dict())
+def store_message(chat_id, role, content):
+    key = f"chat:{chat_id}"
+    redis_client.rpush(key, f"{role}:{content}")
+    redis_client.ltrim(key, -10, -1)
 
-    # Store in memory
-    message_history.append({
-        "title": payload.title,
-        "notes": payload.notes,
-        "date": payload.date
-    })
-    print("📜 Message History:", list(message_history))
+def get_history(chat_id):
+    key = f"chat:{chat_id}"
+    raw = redis_client.lrange(key, 0, -1)
+    return [{"role": part.split(":", 1)[0], "content": part.split(":", 1)[1]} for part in raw if ":" in part]
 
-    notion_url = "https://api.notion.com/v1/pages"
-    headers = {
-        "Authorization": f"Bearer {NOTION_TOKEN}",
-        "Notion-Version": "2022-06-28",
-        "Content-Type": "application/json"
-    }
-
-    data = {
-        "parent": {"database_id": NOTION_DATABASE_ID},
-        "properties": {
-            "Title": {
-                "title": [{"text": {"content": payload.title}}]
-            }
-        },
-        "children": []
-    }
-
-    if payload.notes:
-        data["children"].append({
-            "object": "block",
-            "type": "paragraph",
-            "paragraph": {
-                "rich_text": [{"text": {"content": payload.notes}}]
-            }
-        })
-
-    if payload.date:
-        data["children"].append({
-            "object": "block",
-            "type": "paragraph",
-            "paragraph": {
-                "rich_text": [{"text": {"content": f"Next Step: {payload.date}"}}]
-            }
-        })
-
+def log_to_notion(chat_id, messages):
     try:
-        res = requests.post(notion_url, headers=headers, json=data, timeout=10)
-        res.raise_for_status()
-    except requests.exceptions.RequestException as e:
-        raise HTTPException(status_code=500, detail=f"Notion error: {str(e)}")
+        conversation = "\n".join([f"{m['role']}: {m['content']}" for m in messages])
+        data = {
+            "parent": {"database_id": NOTION_DATABASE_ID},
+            "properties": {
+                "Title": {
+                    "title": [{"text": {"content": f"Chat log: {chat_id}"}}]
+                }
+            },
+            "children": [{
+                "object": "block",
+                "type": "paragraph",
+                "paragraph": {
+                    "rich_text": [{"text": {"content": conversation}}]
+                }
+            }]
+        }
+        headers = {
+            "Authorization": f"Bearer {NOTION_TOKEN}",
+            "Notion-Version": "2022-06-28",
+            "Content-Type": "application/json"
+        }
+        requests.post("https://api.notion.com/v1/pages", headers=headers, json=data, timeout=10)
+    except Exception as e:
+        print("❌ Failed to log conversation to Notion:", str(e))
 
-    return {
-        "status": "Task created ✅",
-        "notion_response": res.json(),
-        "history": list(message_history)
-    }
-
-# ✅ Fetch task history
-@app.get("/history")
-async def get_history():
-    return {"history": list(message_history)}
-
-# ✅ Telegram webhook with GPT-4 Turbo reply
 @app.post("/telegram")
 async def telegram_webhook(request: Request):
     body = await request.json()
@@ -118,15 +83,20 @@ async def telegram_webhook(request: Request):
     if not chat_id or not text:
         return {"ok": False, "error": "Empty or invalid Telegram message payload"}
 
+    store_message(chat_id, "user", text)
+    messages = get_history(chat_id)
+
     try:
         response = client.chat.completions.create(
             model="gpt-4-turbo",
-            messages=[{"role": "user", "content": text}]
+            messages=messages
         )
         gpt_reply = response.choices[0].message.content
     except Exception as e:
         print("❌ GPT error:", str(e))
         gpt_reply = "⚠️ I'm having trouble thinking right now. Try again in a moment!"
+
+    store_message(chat_id, "assistant", gpt_reply)
 
     reply = {
         "chat_id": chat_id,
@@ -138,9 +108,11 @@ async def telegram_webhook(request: Request):
     except Exception as e:
         print("❌ Telegram send error:", str(e))
 
+    if text.lower().strip() == "save":
+        log_to_notion(chat_id, messages)
+
     return {"ok": True}
 
-# ✅ Root GET/HEAD route
 @app.api_route("/", methods=["GET", "HEAD"])
 async def root(request: Request):
     return {"message": "Echo is live 🚀"}
