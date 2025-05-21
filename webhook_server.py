@@ -1,11 +1,13 @@
-import os
-import datetime
-import requests
 from fastapi import FastAPI, Request
 from pydantic import BaseModel
 from dotenv import load_dotenv
-import openai
+import os
+import requests
+import sqlite3
+from datetime import datetime
+from openai import OpenAI
 
+# Load environment variables
 load_dotenv()
 
 app = FastAPI()
@@ -16,106 +18,96 @@ NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 
-openai.api_key = OPENAI_API_KEY
-TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+client = OpenAI(api_key=OPENAI_API_KEY)
 
-headers = {
-    "Authorization": f"Bearer {NOTION_TOKEN}",
-    "Content-Type": "application/json",
-}
+# Initialize SQLite DB
+conn = sqlite3.connect("chat_memory.db", check_same_thread=False)
+c = conn.cursor()
+c.execute('''CREATE TABLE IF NOT EXISTS messages
+             (chat_id TEXT, sender TEXT, text TEXT, timestamp TEXT)''')
+conn.commit()
 
-# Store chat context in memory
-chat_memory = {}
+# Util: Append message to local DB
+def store_message(chat_id, sender, text):
+    c.execute("INSERT INTO messages VALUES (?, ?, ?, ?)", (chat_id, sender, text, datetime.now().isoformat()))
+    conn.commit()
 
-class TelegramMessage(BaseModel):
-    update_id: int
-    message: dict
+# Util: Retrieve recent messages for context
+def get_recent_messages(chat_id, limit=10):
+    c.execute("SELECT sender, text FROM messages WHERE chat_id=? ORDER BY timestamp DESC LIMIT ?", (chat_id, limit))
+    rows = c.fetchall()
+    return list(reversed(rows))
 
+# Util: Send message to Telegram
+def send_telegram_message(chat_id, text):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {"chat_id": chat_id, "text": text}
+    requests.post(url, json=payload)
 
-def get_or_create_notion_page(chat_id: str, title: str) -> str:
-    today = datetime.date.today().isoformat()
-    query_url = "https://api.notion.com/v1/databases/{}/query".format(NOTION_DATABASE_ID)
-    response = requests.post(query_url, headers={**headers, "Notion-Version": "2022-06-28"}, json={
-        "filter": {
-            "and": [
-                {"property": "Chat ID", "rich_text": {"equals": chat_id}},
-                {"property": "Date", "date": {"equals": today}}
-            ]
-        }
-    })
-    results = response.json().get("results")
-
-    if results:
-        return results[0]["id"]
-
-    # Create a new page if not found
-    create_url = "https://api.notion.com/v1/pages"
-    payload = {
+# Util: Add a new page to Notion
+def add_to_notion(title, content):
+    url = "https://api.notion.com/v1/pages"
+    headers = {
+        "Authorization": f"Bearer {NOTION_TOKEN}",
+        "Content-Type": "application/json",
+        "Notion-Version": "2022-06-28"
+    }
+    data = {
         "parent": {"database_id": NOTION_DATABASE_ID},
         "properties": {
-            "Title": {"title": [{"text": {"content": title}}]},
-            "Chat ID": {"rich_text": [{"text": {"content": chat_id}}]},
-            "Date": {"date": {"start": today}}
-        }
-    }
-    response = requests.post(create_url, headers={**headers, "Notion-Version": "2022-06-28"}, json=payload)
-    return response.json().get("id")
-
-
-def add_message_to_notion(page_id: str, message: str, analysis: str):
-    url = f"https://api.notion.com/v1/blocks/{page_id}/children"
-    content = {
-        "children": [
-            {
-                "object": "block",
-                "type": "paragraph",
-                "paragraph": {
-                    "rich_text": [{"type": "text", "text": {"content": f"💬 {message}\n📊 {analysis}"}}]
-                }
+            "Name": {
+                "title": [{"text": {"content": title}}]
             }
-        ]
+        },
+        "children": [{"object": "block", "type": "paragraph", "paragraph": {"text": [{"type": "text", "text": {"content": content}}]}}]
     }
-    requests.patch(url, headers={**headers, "Notion-Version": "2022-06-28"}, json=content)
+    response = requests.post(url, headers=headers, json=data)
+    return response.status_code == 200
 
+# Util: Analyze message with OpenAI GPT-4o
+def analyze_message(message, context):
+    messages = [{"role": "system", "content": "You are a helpful assistant that summarizes and understands Telegram chats."}]
+    for sender, msg in context:
+        messages.append({"role": "user" if sender != "Echo" else "assistant", "content": msg})
+    messages.append({"role": "user", "content": message})
 
-def analyze_message(text: str, history: str = "") -> str:
-    prompt = f"Context:\n{history}\n\nMessage:\n{text}\n\nAnalyze the message. Provide a short summary, tone (e.g. friendly, frustrated), and response recommendation."
-    response = openai.ChatCompletion.create(
-        model="gpt-3.5-turbo",
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=150
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=messages
     )
-    return response["choices"][0]["message"]["content"].strip()
+    return response.choices[0].message.content
 
-
-def reply_to_telegram(chat_id: int, text: str):
-    payload = {"chat_id": chat_id, "text": text}
-    requests.post(TELEGRAM_API_URL, json=payload)
-
-
+# Telegram Webhook Route
 @app.post("/telegram")
-async def telegram_webhook(update: TelegramMessage):
-    message = update.message
-    text = message.get("text")
-    chat = message.get("chat", {})
-    chat_id = str(chat.get("id"))
-    sender = message.get("from", {}).get("username", "Unknown")
+async def telegram_webhook(req: Request):
+    body = await req.json()
+    message = body.get("message")
 
-    # Maintain context
-    if chat_id not in chat_memory:
-        chat_memory[chat_id] = []
-    chat_memory[chat_id].append(text)
-    history = "\n".join(chat_memory[chat_id][-10:])  # Keep last 10
+    if not message:
+        return {"status": "no message"}
+
+    chat_id = message["chat"]["id"]
+    sender = message["from"]["username"]
+    text = message.get("text", "")
+
+    # Store message
+    store_message(str(chat_id), sender, text)
+
+    # Get recent context
+    context = get_recent_messages(str(chat_id))
 
     # Analyze
-    analysis = analyze_message(text, history)
+    ai_response = analyze_message(text, context)
 
-    # Notion
-    page_title = f"Chat with {sender}"
-    page_id = get_or_create_notion_page(chat_id, page_title)
-    add_message_to_notion(page_id, text, analysis)
+    # Send reply
+    send_telegram_message(chat_id, f"Echo: {ai_response}\n(Saved to Notion)")
 
-    # Telegram reply
-    reply_to_telegram(chat_id, "🧠 Got it! Message logged + analyzed.")
+    # Save to Notion
+    add_to_notion(title=f"{sender} on Telegram", content=text + "\n---\n" + ai_response)
 
     return {"ok": True}
+
+# Health check route
+@app.get("/")
+def root():
+    return {"status": "Echo is live 🚀"}
