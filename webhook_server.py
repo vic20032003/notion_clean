@@ -316,3 +316,26 @@ def get_tasks():
 @app.get("/")
 def root():
     return {"status": "Echo is live 🚀"}
+
+
+from datetime import timedelta
+
+@app.get("/tasks-tomorrow")
+def get_tomorrow_tasks():
+    tomorrow = (datetime.utcnow() + timedelta(days=1)).date().isoformat()
+    filter = {
+        "and": [
+            {"property": "Type", "select": {"equals": "Task"}},
+            {"property": "Date", "date": {"equals": tomorrow}}
+        ]
+    }
+    tasks = query_notion_database(NOTION_DATABASE_ID, filter)
+    formatted = [
+        {
+            "title": page["properties"]["Title"]["title"][0]["text"]["content"],
+            "id": page["id"]
+        }
+        for page in tasks
+        if "Title" in page["properties"] and page["properties"]["Title"]["title"]
+    ]
+    return {"date": tomorrow, "tasks": formatted}
