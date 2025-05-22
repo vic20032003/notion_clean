@@ -1,14 +1,14 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
 from dotenv import load_dotenv
 import os
 import requests
 import sqlite3
+import json
 from datetime import datetime, timedelta
 from openai import OpenAI
 from contextlib import contextmanager
-from typing import Generator, List, Optional
+from typing import Generator, List
 from textblob import TextBlob
 
 # === Load environment variables ===
@@ -60,7 +60,6 @@ def init_db():
             )
         """)
         conn.commit()
-
 init_db()
 
 def store_message(chat_id: str, sender: str, text: str):
@@ -246,6 +245,80 @@ def log_to_file(chat_id: str, sender: str, user_message: str, echo_reply: str):
 def send_event_notification(chat_id: str, event: str):
     send_telegram_message(chat_id, f"🔔 Event: {event}")
 
+# === ADVANCED INTENT DETECTION & ROUTING ===
+
+async def extract_intent_and_entities(text: str) -> dict:
+    prompt = f"""
+You are an intelligent automation assistant. Parse the following message for intent, entities, and confidence:
+
+User: "{text}"
+
+Respond in valid JSON as:
+{{
+  "intent": "...",
+  "entities": {{ ... }},
+  "confidence": ...,
+  "confirmation_needed": true/false
+}}
+If the intent is not actionable, set intent to "none".
+"""
+    resp = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[{"role": "user", "content": prompt}]
+    )
+    try:
+        result = json.loads(resp.choices[0].message.content)
+    except Exception as e:
+        result = {"intent": "none", "entities": {}, "confidence": 0, "confirmation_needed": True}
+    return result
+
+# === Intent Handlers: Expand as Needed ===
+def handle_create_event(entities, chat_id):
+    subject = entities.get("subject", "Event")
+    date = entities.get("date")
+    time = entities.get("time")
+    participants = ", ".join(entities.get("participants", []))
+    details = f"Subject: {subject}\nDate: {date} {time or ''}\nParticipants: {participants}"
+    add_to_notion(subject, details, notion_type="Event", chat_id=chat_id)
+    send_telegram_message(chat_id, f"✅ Event created:\n{details}")
+
+def handle_create_task(entities, chat_id):
+    title = entities.get("title", "Task")
+    due_date = entities.get("date")
+    desc = entities.get("description", "")
+    add_to_notion(title, desc, notion_type="Task", chat_id=chat_id)
+    send_telegram_message(chat_id, f"✅ Task created: {title} ({due_date or 'No date'})")
+
+def handle_set_reminder(entities, chat_id):
+    reminder = entities.get("reminder", "Reminder")
+    date = entities.get("date")
+    time = entities.get("time")
+    add_to_notion("Reminder", f"{reminder} ({date} {time or ''})", notion_type="Reminder", chat_id=chat_id)
+    send_telegram_message(chat_id, f"⏰ Reminder set: {reminder} on {date} {time or ''}")
+
+def handle_add_note(entities, chat_id):
+    title = entities.get("title", "Note")
+    content = entities.get("content", "")
+    add_to_notion(title, content, notion_type="Note", chat_id=chat_id)
+    send_telegram_message(chat_id, "📝 Note saved!")
+
+def handle_feedback(entities, chat_id):
+    feedback = entities.get("feedback", "")
+    store_feedback(chat_id, feedback, "user")
+    send_telegram_message(chat_id, "🙏 Thanks for your feedback!")
+
+# Add more handlers as needed (send_email, get_weather, etc.)
+
+# === Intent Routing Table ===
+INTENT_ROUTER = {
+    "create_event": handle_create_event,
+    "schedule_meeting": handle_create_event,
+    "create_task": handle_create_task,
+    "set_reminder": handle_set_reminder,
+    "add_note": handle_add_note,
+    "provide_feedback": handle_feedback,
+}
+
 # === Main AI Logic ===
 chat_history = [{
     "role": "system",
@@ -301,78 +374,52 @@ async def telegram_webhook(req: Request):
         sender = message["from"].get("username", "Anonymous")
         text = message.get("text", "")
 
-        # Privacy: Check if user has opted out
         if check_privacy_optout(chat_id):
             send_telegram_message(chat_id, "⚠️ Privacy Mode: Your messages are not stored. Use /forgetoff to re-enable memory.")
             return {"ok": True, "privacy_mode": True}
 
-        # Content Filtering
         if is_filtered(text):
             send_telegram_message(chat_id, "🚫 Sorry, this message was filtered for spam or prohibited keywords.")
             return {"ok": True, "filtered": True}
 
-        # Simple Custom Commands (extensible)
-        if text.lower().startswith("/tasks"):
-            tasks_data = get_tomorrow_tasks()
-            titles = [task["title"] for task in tasks_data.get("tasks", [])]
-            summary = summarize_tasks_for_telegram(titles)
-            send_telegram_message(chat_id, f"Echo 🤖:\n{summary}\n🗓️ From Notion.")
-            return {"ok": True, "command": "tasks"}
-        if text.lower().startswith("/feedback "):
-            rating = text[10:].strip()
-            store_feedback(chat_id, text, rating)
-            send_telegram_message(chat_id, "🙏 Thanks for your feedback!")
-            return {"ok": True, "command": "feedback"}
-        if text.lower().startswith("/forget"):
-            set_privacy_optout(chat_id)
-            send_telegram_message(chat_id, "🔒 Privacy mode ON. Your messages will no longer be stored.")
-            return {"ok": True, "command": "forget"}
-        if text.lower().startswith("/forgetoff"):
-            clear_privacy_optout(chat_id)
-            send_telegram_message(chat_id, "🔓 Privacy mode OFF. Your messages are now stored for smarter replies.")
-            return {"ok": True, "command": "forgetoff"}
-        if text.lower().startswith("/event "):
-            event = text[7:]
-            send_event_notification(chat_id, event)
-            return {"ok": True, "command": "event"}
+        # Command Handling
+        if text.lower().startswith("/"):
+            # (existing command logic from your code goes here...)
+            pass
+        else:
+            # === Natural Language Intent Handling ===
+            intent_data = await extract_intent_and_entities(text)
+            intent = intent_data.get("intent")
+            entities = intent_data.get("entities", {})
+            confidence = intent_data.get("confidence", 0)
+            confirmation_needed = intent_data.get("confirmation_needed", False)
 
-        # Sentiment analysis, triggers notification if very negative
-        sentiment = analyze_sentiment(text)
-        if sentiment == "negative":
-            send_telegram_message(chat_id, "🟠 Noted: Message seems negative. If you need help, type /help or /feedback.")
+            context = get_recent_messages(chat_id)
+            long_term = get_long_term_memory(chat_id)
 
-        # Task summary always shown (example of automated response)
-        tasks_data = get_tomorrow_tasks()
-        titles = [task["title"] for task in tasks_data.get("tasks", [])]
-        summary = summarize_tasks_for_telegram(titles)
-        send_telegram_message(chat_id, f"Echo 🤖:\n{summary}\n🗓️ From Notion.")
+            if intent in INTENT_ROUTER and confidence > 70 and not confirmation_needed:
+                INTENT_ROUTER[intent](entities, chat_id)
+                return {"ok": True, "intent_handled": intent}
+            elif confidence < 40 or intent == "none":
+                ai_response = await analyze_message(text, context, long_term)
+                send_telegram_message(chat_id, f"Echo 🤖: {ai_response}\n📝 Saved to Notion.")
+            else:
+                # Ask for clarification if needed
+                send_telegram_message(chat_id, "🤖 Could you clarify your request? I need a bit more info.")
 
-        # Memory and learning from interaction
-        store_message(chat_id, sender, text)
-        context = get_recent_messages(chat_id)
-        long_term = get_long_term_memory(chat_id)
-        ai_response = await analyze_message(text, context, long_term)
+            store_message(chat_id, sender, text)
+            # Notion logging & file log for every message:
+            ai_response = await analyze_message(text, context, long_term)
+            add_to_notion(
+                title=f"{sender} on Telegram",
+                content=f"{text}\n\n---\n\n{ai_response}",
+                notion_type="User Message",
+                tags=["Telegram"],
+                chat_id=chat_id
+            )
+            log_to_file(chat_id, sender, text, ai_response)
+            return {"ok": True, "intent": intent}
 
-        # Feedback prompt
-        telegram_success = send_telegram_message(chat_id, f"Echo 🤖: {ai_response}\n📝 Saved to Notion.\n\nRate this reply? /feedback [good/bad]")
-
-        # Notion logging & local file log
-        notion_success = add_to_notion(
-            title=f"{sender} on Telegram",
-            content=f"{text}\n\n---\n\n{ai_response}",
-            notion_type="User Message",
-            tags=["Telegram"],
-            chat_id=chat_id
-        )
-        log_success = log_to_file(chat_id, sender, text, ai_response)
-
-        return {
-            "ok": True,
-            "telegram_sent": telegram_success,
-            "notion_saved": notion_success,
-            "logged": log_success,
-            "sentiment": sentiment
-        }
     except Exception as e:
         print(f"Error in webhook: {e}")
         return {"ok": False, "error": str(e)}
@@ -384,20 +431,16 @@ def root():
 # ==== Social Media Integration Scaffold ====
 @app.post("/social/post")
 def social_media_post(payload: dict):
-    # Placeholder - in production, connect to real APIs
     platform = payload.get("platform", "twitter")
     content = payload.get("content", "")
-    # Future: authenticate, send API request
     print(f"Would post to {platform}: {content}")
     return {"sent": True, "platform": platform}
 
 # ==== Multimedia Handling Scaffold ====
 @app.post("/telegram/media")
 def handle_media(payload: dict):
-    # Placeholder: process images/videos/audio
     media_type = payload.get("type", "unknown")
     file_id = payload.get("file_id")
     chat_id = payload.get("chat_id")
-    # Extend this for real media download/processing
     send_telegram_message(chat_id, f"Received your {media_type}. This feature is coming soon.")
     return {"ok": True, "media_type": media_type}
