@@ -159,17 +159,26 @@ Sigil/Trigger Phrase (if any):
         return False
 
 # GPT Message Analysis
+chat_history = [{
+    "role": "system",
+    "content": (
+        "You are Echo, an intelligent assistant that processes and responds to messages from Telegram "
+        "and other sources. Your goal is to help organize thoughts, extract tasks, and update Notion with insights, "
+        "reminders, and next steps. Be concise, helpful, and context-aware. Always prioritize clarity and action."
+    )
+}]
+
 async def analyze_message(message: str, context: list) -> str:
     try:
-        chat_history = [{"role": "system", "content": "You are a helpful assistant that responds to Telegram messages and provides insights."}]
+        chat_context = chat_history[:]
         for sender, msg in context:
             role = "assistant" if sender == "Echo" else "user"
-            chat_history.append({"role": role, "content": msg})
-        chat_history.append({"role": "user", "content": message})
-        
+            chat_context.append({"role": role, "content": msg})
+        chat_context.append({"role": "user", "content": message})
+
         response = client.chat.completions.create(
-            model="gpt-4o",  # Changed to gpt-4o as requested
-            messages=chat_history
+            model="gpt-4o",
+            messages=chat_context
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
@@ -184,7 +193,7 @@ async def telegram_webhook(req: Request):
         message = body.get("message")
         if not message:
             return {"status": "no message"}
-            
+
         chat_id = str(message["chat"]["id"])
         sender = message["from"].get("username", "Anonymous")
         text = message.get("text", "")
@@ -193,7 +202,6 @@ async def telegram_webhook(req: Request):
         context = get_recent_messages(chat_id)
         ai_response = await analyze_message(text, context)
 
-        # Send response and log
         telegram_success = send_telegram_message(chat_id, f"Echo 🤖: {ai_response}\n📝 Saved to Notion.")
         notion_success = add_to_notion(
             title=f"{sender} on Telegram",
