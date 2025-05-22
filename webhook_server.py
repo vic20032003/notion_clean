@@ -64,7 +64,7 @@ def add_to_notion(title, content):
     headers = {
         "Authorization": f"Bearer {NOTION_TOKEN}",
         "Content-Type": "application/json",
-        "Notion-Version": "2023-05-25"
+        "Notion-Version": "2022-06-28"  # Use the most recent supported version
     }
     data = {
         "parent": {"database_id": NOTION_DATABASE_ID},
@@ -180,7 +180,7 @@ def notion_check():
     url = f"https://api.notion.com/v1/databases/{NOTION_DATABASE_ID}"
     headers = {
         "Authorization": f"Bearer {NOTION_TOKEN}",
-        "Notion-Version": "2023-05-25"
+        "Notion-Version": "2022-06-28"
     }
     response = requests.get(url, headers=headers)
     try:
