@@ -24,7 +24,7 @@ print("Using Token:", NOTION_TOKEN[:10], "...")
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 # === SQLite DB for short-term memory setup ===
-DB_PATH = "/mnt/data/chat_memory.db"
+DB_PATH = "./chat_memory.db"
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 cursor = conn.cursor()
 cursor.execute("""
@@ -58,13 +58,13 @@ def send_telegram_message(chat_id, text):
     payload = {"chat_id": chat_id, "text": text}
     requests.post(url, json=payload)
 
-# === Notion Integration with Debug Logging ===
+# === Notion Integration ===
 def add_to_notion(title, content):
     url = "https://api.notion.com/v1/pages"
     headers = {
         "Authorization": f"Bearer {NOTION_TOKEN}",
         "Content-Type": "application/json",
-        "Notion-Version": "2022-06-28"
+        "Notion-Version": "2023-05-25"
     }
     data = {
         "parent": {"database_id": NOTION_DATABASE_ID},
@@ -77,7 +77,10 @@ def add_to_notion(title, content):
             "object": "block",
             "type": "paragraph",
             "paragraph": {
-                "text": [{"type": "text", "text": {"content": content}}]
+                "rich_text": [{
+                    "type": "text",
+                    "text": {"content": content}
+                }]
             }
         }]
     }
