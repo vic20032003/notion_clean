@@ -14,10 +14,20 @@ from textblob import TextBlob
 load_dotenv()
 app = FastAPI()
 
+# Normalize Notion IDs to standard hyphenated UUID format if needed
+def normalize_notion_id(notion_id: str) -> str:
+    nid = notion_id.replace("-", "")
+    if len(nid) == 32:
+        return f"{nid[:8]}-{nid[8:12]}-{nid[12:16]}-{nid[16:20]}-{nid[20:]}"
+    return notion_id
+
 NOTION_TOKEN = os.getenv("NOTION_TOKEN")
-NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
-NOTION_CONTACTS_ID = os.getenv("NOTION_CONTACTS_ID")  # Contacts DB
-NOTION_FEEDBACK_ID = os.getenv("NOTION_FEEDBACK_ID", NOTION_DATABASE_ID)
+_raw_db_id = os.getenv("NOTION_DATABASE_ID")
+NOTION_DATABASE_ID = normalize_notion_id(_raw_db_id) if _raw_db_id else None
+_raw_contacts_id = os.getenv("NOTION_CONTACTS_ID")
+NOTION_CONTACTS_ID = normalize_notion_id(_raw_contacts_id) if _raw_contacts_id else None
+_raw_feedback_id = os.getenv("NOTION_FEEDBACK_ID", _raw_db_id or "")
+NOTION_FEEDBACK_ID = normalize_notion_id(_raw_feedback_id) if _raw_feedback_id else NOTION_DATABASE_ID
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 
@@ -159,18 +169,24 @@ def add_to_notion(title, content, notion_type="User Message", tags=None, chat_id
     if chat_id:
         data["properties"]["Chat ID"] = {"rich_text": [{"text": {"content": str(chat_id)}}]}
     r = requests.post(url, headers=notion_headers(), json=data, timeout=10)
+    if r.status_code not in (200, 201):
+        print(f"🔴 Notion add page failed (status {r.status_code}): {r.text}")
     return r.status_code in (200, 201)
 
 def update_notion_page(page_id, properties: dict):
     url = f"https://api.notion.com/v1/pages/{page_id}"
     data = {"properties": properties}
     r = requests.patch(url, headers=notion_headers(), json=data, timeout=10)
+    if r.status_code not in (200, 201):
+        print(f"🔴 Notion update page failed (status {r.status_code}): {r.text}")
     return r.status_code in (200, 201)
 
 def archive_notion_page(page_id):
     url = f"https://api.notion.com/v1/pages/{page_id}"
     data = {"archived": True}
     r = requests.patch(url, headers=notion_headers(), json=data, timeout=10)
+    if r.status_code != 200:
+        print(f"🔴 Notion archive page failed (status {r.status_code}): {r.text}")
     return r.status_code == 200
 
 # === Contact API Helpers ===
