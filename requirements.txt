@@ -23,3 +23,5 @@ typing_extensions==4.13.2
 urllib3==2.4.0
 uvicorn==0.34.2
 textblob
+python-multipart==0.0.5
+sqlite3
