@@ -1,5 +1,4 @@
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 import os
 import requests
@@ -8,7 +7,7 @@ import json
 from datetime import datetime, timedelta
 from openai import OpenAI
 from contextlib import contextmanager
-from typing import Generator, List, Optional
+from typing import Generator, Optional, List
 from textblob import TextBlob
 
 # === Load environment variables ===
@@ -17,6 +16,7 @@ app = FastAPI()
 
 NOTION_TOKEN = os.getenv("NOTION_TOKEN")
 NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
+NOTION_CONTACTS_ID = os.getenv("NOTION_CONTACTS_ID")  # Contacts DB
 NOTION_FEEDBACK_ID = os.getenv("NOTION_FEEDBACK_ID", NOTION_DATABASE_ID)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -139,11 +139,11 @@ def notion_query(database_id, filter_obj=None, sorts=None):
     r = requests.post(url, headers=notion_headers(), json=payload)
     return r.json().get("results", [])
 
-def add_to_notion(title, content, notion_type="User Message", tags=None, chat_id=None, parent_id=None, date=None):
+def add_to_notion(title, content, notion_type="User Message", tags=None, chat_id=None, parent_id=None, date=None, database_id=None):
     if tags is None: tags = []
     url = "https://api.notion.com/v1/pages"
     data = {
-        "parent": {"database_id": NOTION_DATABASE_ID} if not parent_id else {"page_id": parent_id},
+        "parent": {"database_id": database_id or NOTION_DATABASE_ID} if not parent_id else {"page_id": parent_id},
         "properties": {
             "Title": {"title": [{"text": {"content": title}}]},
             "Type": {"select": {"name": notion_type}},
@@ -172,6 +172,66 @@ def archive_notion_page(page_id):
     data = {"archived": True}
     r = requests.patch(url, headers=notion_headers(), json=data, timeout=10)
     return r.status_code == 200
+
+# === Contact API Helpers ===
+def add_contact_to_notion(name, phone=None, email=None, company=None, notes=None, tags=None):
+    if not NOTION_CONTACTS_ID:
+        return False
+    if tags is None: tags = []
+    url = "https://api.notion.com/v1/pages"
+    data = {
+        "parent": {"database_id": NOTION_CONTACTS_ID},
+        "properties": {
+            "Name": {"title": [{"text": {"content": name}}]},
+            "Phone": {"rich_text": [{"text": {"content": phone or ""}}]},
+            "Email": {"email": email or ""},
+            "Company": {"rich_text": [{"text": {"content": company or ""}}]},
+            "Tags": {"multi_select": [{"name": tag} for tag in tags]}
+        },
+        "children": [{
+            "object": "block", "type": "paragraph",
+            "paragraph": {"rich_text": [{"type": "text", "text": {"content": notes or ""}}]}
+        }]
+    }
+    r = requests.post(url, headers=notion_headers(), json=data, timeout=10)
+    return r.status_code in (200, 201)
+
+def find_contacts(name=None, email=None):
+    if not NOTION_CONTACTS_ID:
+        return []
+    filter_obj = {"and": []}
+    if name:
+        filter_obj["and"].append({"property": "Name", "title": {"contains": name}})
+    if email:
+        filter_obj["and"].append({"property": "Email", "email": {"equals": email}})
+    results = notion_query(NOTION_CONTACTS_ID, filter_obj)
+    contacts = []
+    for page in results:
+        contact = {
+            "name": page["properties"]["Name"]["title"][0]["text"]["content"],
+            "email": page["properties"].get("Email", {}).get("email", ""),
+            "phone": page["properties"].get("Phone", {}).get("rich_text", [{}])[0].get("text", {}).get("content", ""),
+            "company": page["properties"].get("Company", {}).get("rich_text", [{}])[0].get("text", {}).get("content", ""),
+            "id": page["id"]
+        }
+        contacts.append(contact)
+    return contacts
+
+def update_contact_in_notion(contact_id, update_fields):
+    props = {}
+    for key, value in update_fields.items():
+        if key == "name":
+            props["Name"] = {"title": [{"text": {"content": value}}]}
+        elif key == "phone":
+            props["Phone"] = {"rich_text": [{"text": {"content": value}}]}
+        elif key == "email":
+            props["Email"] = {"email": value}
+        elif key == "company":
+            props["Company"] = {"rich_text": [{"text": {"content": value}}]}
+    return update_notion_page(contact_id, props)
+
+def delete_contact(contact_id):
+    return archive_notion_page(contact_id)
 
 # === "Real" Task/Events/Notes/Reminder Logic ===
 def get_tasks(filter_date=None, status=None, tags=None, priority=None):
@@ -224,7 +284,6 @@ def search_notes(keywords=None, tags=None, date_range=None):
     notes = []
     for page in results:
         title = page["properties"]["Title"]["title"][0]["text"]["content"]
-        # Notion API doesn't support full text search—filter here if needed
         notes.append({"title": title})
     if keywords:
         notes = [note for note in notes if any(kw.lower() in note["title"].lower() for kw in keywords)]
@@ -272,7 +331,7 @@ def send_feedback(feedback_text, rating, related_message=None):
         content += f"\nRelated: {related_message}"
     return add_to_notion("Feedback", content, notion_type="Feedback", parent_id=NOTION_FEEDBACK_ID)
 
-# === Telegram/Utility Helpers (unchanged) ===
+# === Telegram/Utility Helpers ===
 def send_telegram_message(chat_id: str, text: str) -> bool:
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": chat_id, "text": text}
@@ -300,7 +359,7 @@ async def extract_intent_and_entities(text: str) -> dict:
     prompt = f"""
 You are an intelligent automation assistant. Parse the following message for intent, entities, and confidence.
 Available intents include:
-- create_task, update_task, get_tasks, add_calendar_event, list_events, add_note, search_notes, set_reminder, cancel_reminder, send_feedback, ... (plus 100+ more; see comments for extra ideas)
+- create_task, update_task, get_tasks, add_calendar_event, list_events, add_note, search_notes, set_reminder, cancel_reminder, send_feedback, get_weather, provide_feedback, create_contact, update_contact, find_contact, delete_contact
 User: "{text}"
 Respond in valid JSON as:
 {{
@@ -321,7 +380,7 @@ If the intent is not actionable, set intent to "none".
         result = {"intent": "none", "entities": {}, "confidence": 0, "confirmation_needed": True}
     return result
 
-# === Intent Handlers (routes to real Notion logic) ===
+# === Intent Handlers ===
 def handle_create_task(entities, chat_id):
     title = entities.get("title", "Task")
     due_date = entities.get("due_date")
@@ -417,6 +476,59 @@ def handle_send_feedback(entities, chat_id):
     )
     send_telegram_message(chat_id, "🙏 Thanks for your feedback!")
 
+def handle_provide_feedback(entities, chat_id):
+    feedback = entities.get("feedback_text", "")
+    rating = entities.get("rating", "")
+    send_feedback(feedback, rating)
+    send_telegram_message(chat_id, "🙏 Feedback provided!")
+
+def handle_get_weather(entities, chat_id):
+    location = entities.get("location", "Tallinn")
+    send_telegram_message(chat_id, f"🌤️ Weather in {location}: 15°C, clear sky. (Demo)")
+
+def handle_create_contact(entities, chat_id):
+    name = entities.get("name")
+    phone = entities.get("phone")
+    email = entities.get("email")
+    company = entities.get("company")
+    notes = entities.get("notes")
+    tags = entities.get("tags", [])
+    if not name:
+        send_telegram_message(chat_id, "❗ Contact name is required.")
+        return
+    ok = add_contact_to_notion(name, phone, email, company, notes, tags)
+    if ok:
+        send_telegram_message(chat_id, f"🧑‍💼 Contact '{name}' created!")
+    else:
+        send_telegram_message(chat_id, f"❗ Failed to create contact '{name}'.")
+
+def handle_find_contact(entities, chat_id):
+    name = entities.get("name")
+    email = entities.get("email")
+    contacts = find_contacts(name, email)
+    if contacts:
+        summary = "\n".join([f"• {c['name']} | {c['email']} | {c['phone']} | {c['company']}" for c in contacts])
+    else:
+        summary = "No contacts found."
+    send_telegram_message(chat_id, summary)
+
+def handle_update_contact(entities, chat_id):
+    contact_id = entities.get("contact_id")
+    update_fields = entities.get("update_fields", {})
+    if not contact_id or not update_fields:
+        send_telegram_message(chat_id, "❗ Please provide contact ID and fields to update.")
+        return
+    ok = update_contact_in_notion(contact_id, update_fields)
+    send_telegram_message(chat_id, "✅ Contact updated!" if ok else "❗ Update failed.")
+
+def handle_delete_contact(entities, chat_id):
+    contact_id = entities.get("contact_id")
+    if not contact_id:
+        send_telegram_message(chat_id, "❗ Contact ID is required to delete.")
+        return
+    ok = delete_contact(contact_id)
+    send_telegram_message(chat_id, "🗑️ Contact deleted." if ok else "❗ Deletion failed.")
+
 # === Intent Router Table ===
 INTENT_ROUTER = {
     "create_task": handle_create_task,
@@ -429,7 +541,12 @@ INTENT_ROUTER = {
     "set_reminder": handle_set_reminder,
     "cancel_reminder": handle_cancel_reminder,
     "send_feedback": handle_send_feedback,
-    # Add more handlers as you add more functions below
+    "provide_feedback": handle_provide_feedback,
+    "get_weather": handle_get_weather,
+    "create_contact": handle_create_contact,
+    "find_contact": handle_find_contact,
+    "update_contact": handle_update_contact,
+    "delete_contact": handle_delete_contact,
 }
 
 # === Main AI Logic ===
@@ -538,43 +655,3 @@ def feedback(payload: dict):
     rating = payload.get("rating")
     send_feedback(message, rating)
     return {"ok": True}
-
-# --- Expandable: 100+ More Useful Smart Assistant Functions ---
-# (Here is a list you can use for AI intent prompting, or as feature backlog)
-"""
-- add_contact, update_contact, find_contact, delete_contact
-- create_project, update_project, close_project
-- start_timer, stop_timer, show_timers
-- generate_invoice, send_invoice, check_invoice_status
-- add_expense, list_expenses, summarize_expenses
-- book_flight, book_hotel, cancel_booking
-- translate_text, summarize_document, extract_action_items
-- scan_receipt, scan_business_card, save_document
-- generate_nda, generate_contract, sign_document
-- track_habit, start_workout, log_meal
-- log_water, track_sleep, track_mood
-- fetch_weather, set_weather_alert, get_news
-- save_bookmark, open_bookmark, delete_bookmark
-- create_presentation, generate_briefing, make_poll
-- run_survey, show_results, send_mass_message
-- share_location, find_nearby, order_taxi
-- request_payment, check_balance, transfer_money
-- generate_api_key, disable_api_key, check_api_usage
-- schedule_zoom, join_zoom, send_zoom_invite
-- remind_birthday, add_anniversary, track_gift_ideas
-- list_birthdays, add_birthday_gift, archive_gift
-- set_snooze, wake_me_up, create_alarm
-- open_ticket, close_ticket, escalate_ticket
-- start_video_call, record_call, transcribe_call
-- upload_file, share_file, delete_file
-- scan_for_virus, backup_files, restore_backup
-- check_stock_price, add_stock_alert, buy_stock
-- add_crypto_wallet, send_crypto, track_crypto_portfolio
-- record_voice_note, transcribe_voice_note, send_voice_message
-- start_chat, end_chat, transfer_chat
-- create_reminder_for_team, send_team_update, assign_task_to_team
-"""
-
-# Continue expanding this as you wish!
-
-# END OF FILEs
