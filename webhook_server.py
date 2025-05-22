@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Body
 from dotenv import load_dotenv
 import os
 import requests
@@ -233,7 +233,7 @@ def update_contact_in_notion(contact_id, update_fields):
 def delete_contact(contact_id):
     return archive_notion_page(contact_id)
 
-# === "Real" Task/Events/Notes/Reminder Logic ===
+# === Task/Event/Note Management ===
 def get_tasks(filter_date=None, status=None, tags=None, priority=None):
     filter_obj = {"and": [{"property": "Type", "select": {"equals": "Task"}}]}
     if filter_date:
@@ -354,7 +354,7 @@ def analyze_sentiment(text: str) -> str:
         return "positive"
     return "neutral"
 
-# === ADVANCED INTENT DETECTION & ROUTING ===
+# === Intent Detection & Routing ===
 async def extract_intent_and_entities(text: str) -> dict:
     prompt = f"""
 You are an intelligent automation assistant. Parse the following message for intent, entities, and confidence.
@@ -570,7 +570,7 @@ async def analyze_message(message: str, context: list, long_term: list) -> str:
         print(f"Error in message analysis: {e}")
         return "I encountered an error processing your message."
 
-# === Core Endpoints (Telegram, Tasks, etc) ===
+# === Core Endpoints ===
 @app.post("/telegram")
 async def telegram_webhook(req: Request):
     try:
@@ -655,3 +655,80 @@ def feedback(payload: dict):
     rating = payload.get("rating")
     send_feedback(message, rating)
     return {"ok": True}
+
+# === New Notion Query Endpoint ===
+@app.post("/query_notion_db")
+async def query_notion_db(
+    body: dict = Body(...),
+):
+    """
+    Query the Notion database dynamically based on the input filter/sort.
+    Accepts a JSON payload with keys:
+      - database_id (string, optional) - defaults to NOTION_DATABASE_ID
+      - filter (object, optional) - Notion filter object
+      - sorts (array, optional) - Notion sort objects
+      - page_size (number, optional) - defaults to 20
+    Returns: JSON results from Notion API.
+    """
+    try:
+        database_id = body.get("database_id", NOTION_DATABASE_ID)
+        filter_obj = body.get("filter")
+        sorts = body.get("sorts")
+        page_size = body.get("page_size", 20)
+        
+        # Use your existing notion_query function
+        results = notion_query(database_id, filter_obj, sorts)
+        
+        # Process results to make them more API-friendly
+        processed_results = []
+        for page in results:
+            # Extract common properties
+            page_id = page.get("id")
+            properties = {}
+            
+            # Process all properties in the page
+            for prop_name, prop_value in page.get("properties", {}).items():
+                prop_type = prop_value.get("type")
+                
+                # Handle different property types
+                if prop_type == "title":
+                    properties[prop_name] = " ".join([t["text"]["content"] for t in prop_value["title"]])
+                elif prop_type == "rich_text":
+                    properties[prop_name] = " ".join([t["text"]["content"] for t in prop_value["rich_text"]]) if prop_value["rich_text"] else ""
+                elif prop_type == "select":
+                    properties[prop_name] = prop_value["select"]["name"] if prop_value["select"] else None
+                elif prop_type == "multi_select":
+                    properties[prop_name] = [item["name"] for item in prop_value["multi_select"]]
+                elif prop_type == "date":
+                    properties[prop_name] = prop_value["date"]
+                elif prop_type == "checkbox":
+                    properties[prop_name] = prop_value["checkbox"]
+                elif prop_type == "number":
+                    properties[prop_name] = prop_value["number"]
+                elif prop_type == "url":
+                    properties[prop_name] = prop_value["url"]
+                elif prop_type == "email":
+                    properties[prop_name] = prop_value["email"]
+                elif prop_type == "phone_number":
+                    properties[prop_name] = prop_value["phone_number"]
+                # Add more property types as needed
+            
+            processed_results.append({
+                "id": page_id,
+                "properties": properties,
+                "url": page.get("url"),
+                "created_time": page.get("created_time"),
+                "last_edited_time": page.get("last_edited_time")
+            })
+        
+        return {
+            "success": True,
+            "data": processed_results,
+            "count": len(processed_results)
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "details": f"Failed to query Notion database {database_id}"
+        }
