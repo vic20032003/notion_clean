@@ -1,11 +1,12 @@
 
 from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
 import os
 import requests
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from openai import OpenAI
 from contextlib import contextmanager
 from typing import Generator, List
@@ -15,16 +16,12 @@ load_dotenv()
 
 app = FastAPI()
 
-# Environment variables
 NOTION_TOKEN = os.getenv("NOTION_TOKEN")
 NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 
-# OpenAI Client
 client = OpenAI(api_key=OPENAI_API_KEY)
-
-# Database connection management
 DB_PATH = "./chat_memory.db"
 
 @contextmanager
@@ -35,7 +32,6 @@ def get_db() -> Generator[sqlite3.Connection, None, None]:
     finally:
         conn.close()
 
-# Initialize database
 def init_db():
     with get_db() as conn:
         cursor = conn.cursor()
@@ -51,7 +47,6 @@ def init_db():
 
 init_db()
 
-# Memory Functions
 def store_message(chat_id: str, sender: str, text: str):
     with get_db() as conn:
         cursor = conn.cursor()
@@ -70,7 +65,6 @@ def get_recent_messages(chat_id: str, limit: int = 10):
         )
         return list(reversed(cursor.fetchall()))
 
-# Telegram Send
 def send_telegram_message(chat_id: str, text: str) -> bool:
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": chat_id, "text": text}
@@ -81,7 +75,6 @@ def send_telegram_message(chat_id: str, text: str) -> bool:
         print(f"Error sending Telegram message: {e}")
         return False
 
-# Notion Integration
 def add_to_notion(title: str, content: str, notion_type: str = "User Message", tags: list = None, chat_id: str = None) -> bool:
     if tags is None:
         tags = []
@@ -127,45 +120,28 @@ def add_to_notion(title: str, content: str, notion_type: str = "User Message", t
 
     try:
         response = requests.post(url, headers=headers, json=data, timeout=10)
-        if response.status_code not in (200, 201):
-            print(f"Notion API error: {response.status_code} - {response.text}")
-            return False
-        return True
+        return response.status_code in (200, 201)
     except Exception as e:
         print(f"Exception while posting to Notion: {e}")
         return False
 
-# Echo Logs
-LOG_DIR = "echologs"
-os.makedirs(LOG_DIR, exist_ok=True)
-
 def log_to_file(chat_id: str, sender: str, user_message: str, echo_reply: str):
     try:
+        os.makedirs("echologs", exist_ok=True)
         date = datetime.now().strftime("%Y-%m-%d")
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        filename = os.path.join(LOG_DIR, f"log-{date}.txt")
-        entry = f"""
-Date: {timestamp}
-Message From Echo: {echo_reply}
-Related User Message: {user_message}
-Keywords/Themes:
-Sigil/Trigger Phrase (if any):
----
-"""
+        filename = os.path.join("echologs", f"log-{date}.txt")
         with open(filename, "a", encoding="utf-8") as f:
-            f.write(entry)
+            f.write(f"Date: {timestamp}\nMessage From Echo: {echo_reply}\nRelated User Message: {user_message}\n---\n")
         return True
     except Exception as e:
         print(f"Error logging to file: {e}")
         return False
 
-# GPT Message Analysis
 chat_history = [{
     "role": "system",
     "content": (
-        "You are Echo, an intelligent assistant that processes and responds to messages from Telegram "
-        "and other sources. Your goal is to help organize thoughts, extract tasks, and update Notion with insights, "
-        "reminders, and next steps. Be concise, helpful, and context-aware. Always prioritize clarity and action."
+        "You are Echo, an intelligent assistant. Be concise, helpful, and action-oriented."
     )
 }]
 
@@ -184,53 +160,56 @@ async def analyze_message(message: str, context: list) -> str:
         return response.choices[0].message.content.strip()
     except Exception as e:
         print(f"Error in message analysis: {e}")
-        return "I apologize, but I encountered an error processing your message."
+        return "I encountered an error processing your message."
 
-# Telegram Webhook
-from fastapi.responses import JSONResponse
-
-# Summarize Notion tasks for Telegram
 def summarize_tasks_for_telegram(task_list: list[str]) -> str:
     if not task_list:
         return "✅ You have no tasks scheduled for tomorrow. Enjoy your day!"
 
     bullet_list = "\n".join(f"- {task}" for task in task_list)
-    prompt = (
-        "Summarize the following task list in a clear, helpful Telegram message:\n\n"
-        f"{bullet_list}\n\n"
-        "Be concise, friendly, and action-oriented."
-    )
-
+    prompt = f"Summarize the following task list in a clear, helpful Telegram message:\n\n{bullet_list}\n\nBe concise, friendly, and action-oriented."
     response = client.chat.completions.create(
         model="gpt-4o",
         messages=[{"role": "user", "content": prompt}]
     )
     return response.choices[0].message.content.strip()
 
-from fastapi.responses import JSONResponse
+def query_notion_database(database_id, filter=None):
+    url = f"https://api.notion.com/v1/databases/{database_id}/query"
+    headers = {
+        "Authorization": f"Bearer {NOTION_TOKEN}",
+        "Notion-Version": "2022-06-28",
+        "Content-Type": "application/json"
+    }
+    payload = {"page_size": 10}
+    if filter:
+        payload["filter"] = filter
 
-# Summarize Notion tasks for Telegram
-def summarize_tasks_for_telegram(task_list: list[str]) -> str:
-    if not task_list:
-        return "✅ You have no tasks scheduled for tomorrow. Enjoy your day!"
+    try:
+        response = requests.post(url, headers=headers, json=payload)
+        return response.json().get("results", [])
+    except Exception as e:
+        print("❌ Failed to query Notion:", e)
+        return []
 
-    bullet_list = "
-".join(f"- {task}" for task in task_list)
-    prompt = (
-        "Summarize the following task list in a clear, helpful Telegram message:
-
-"
-        f"{bullet_list}
-
-"
-        "Be concise, friendly, and action-oriented."
-    )
-
-    response = client.chat.completions.create(
-        model="gpt-4o",
-        messages=[{"role": "user", "content": prompt}]
-    )
-    return response.choices[0].message.content.strip()
+@app.get("/tasks-tomorrow")
+def get_tomorrow_tasks():
+    tomorrow = (datetime.utcnow() + timedelta(days=1)).date().isoformat()
+    filter = {
+        "and": [
+            {"property": "Type", "select": {"equals": "Task"}},
+            {"property": "Date", "date": {"equals": tomorrow}}
+        ]
+    }
+    tasks = query_notion_database(NOTION_DATABASE_ID, filter)
+    return {
+        "date": tomorrow,
+        "tasks": [
+            {"title": page["properties"]["Title"]["title"][0]["text"]["content"], "id": page["id"]}
+            for page in tasks
+            if "Title" in page["properties"] and page["properties"]["Title"]["title"]
+        ]
+    }
 
 @app.post("/telegram")
 async def telegram_webhook(req: Request):
@@ -248,48 +227,8 @@ async def telegram_webhook(req: Request):
             tasks_data = get_tomorrow_tasks()
             titles = [task["title"] for task in tasks_data.get("tasks", [])]
             summary = summarize_tasks_for_telegram(titles)
-            send_telegram_message(chat_id, f"Echo 🤖:
-{summary}
-🗓️ From Notion.")
+            send_telegram_message(chat_id, f"Echo 🤖:\n{summary}\n🗓️ From Notion.")
             return JSONResponse({"ok": True, "summary": summary})
-
-        store_message(chat_id, sender, text)
-        context = get_recent_messages(chat_id)
-        ai_response = await analyze_message(text, context)
-
-        telegram_success = send_telegram_message(chat_id, f"Echo 🤖: {ai_response}
-📝 Saved to Notion.")
-        notion_success = add_to_notion(
-            title=f"{sender} on Telegram",
-            content=f"{text}
-
----
-
-{ai_response}",
-            notion_type="User Message",
-            tags=["Telegram"],
-            chat_id=chat_id
-        )
-        log_success = log_to_file(chat_id, sender, text, ai_response)
-
-        return {
-            "ok": True,
-            "telegram_sent": telegram_success,
-            "notion_saved": notion_success,
-            "logged": log_success
-        }
-    except Exception as e:
-        print(f"Error in webhook: {e}")
-        return {"ok": False, "error": str(e)}
-    try:
-        body = await req.json()
-        message = body.get("message")
-        if not message:
-            return {"status": "no message"}
-
-        chat_id = str(message["chat"]["id"])
-        sender = message["from"].get("username", "Anonymous")
-        text = message.get("text", "")
 
         store_message(chat_id, sender, text)
         context = get_recent_messages(chat_id)
@@ -315,119 +254,6 @@ async def telegram_webhook(req: Request):
         print(f"Error in webhook: {e}")
         return {"ok": False, "error": str(e)}
 
-# API Models
-class TaskPayload(BaseModel):
-    title: str
-    notes: str
-    date: str | None = None
-    tags: list[str] | None = []
-
-@app.post("/task")
-async def receive_task(payload: TaskPayload):
-    success = add_to_notion(
-        title=payload.title,
-        content=payload.notes,
-        notion_type="Task",
-        tags=payload.tags,
-        chat_id="task-manual"
-    )
-    return {"received": payload.title, "notion_success": success}
-
-@app.get("/test-notion")
-def test_notion():
-    success = add_to_notion(
-        "Test Title",
-        "This came from /test-notion route",
-        notion_type="Test",
-        tags=["Debug", "Test"],
-        chat_id="test"
-    )
-    return {"success": success}
-
-@app.get("/notion-check")
-def notion_check():
-    try:
-        url = f"https://api.notion.com/v1/databases/{NOTION_DATABASE_ID}"
-        headers = {
-            "Authorization": f"Bearer {NOTION_TOKEN}",
-            "Notion-Version": "2022-06-28"
-        }
-        response = requests.get(url, headers=headers, timeout=10)
-        return {
-            "status_code": response.status_code,
-            "success": response.status_code == 200,
-            "response": response.json() if response.status_code == 200 else {"error": response.text}
-        }
-    except Exception as e:
-        return {
-            "status_code": 500,
-            "success": False,
-            "error": str(e)
-        }
-
-# Query Notion Tasks
-def query_notion_database(database_id, filter=None):
-    url = f"https://api.notion.com/v1/databases/{database_id}/query"
-    headers = {
-        "Authorization": f"Bearer {NOTION_TOKEN}",
-        "Notion-Version": "2022-06-28",
-        "Content-Type": "application/json"
-    }
-
-    payload = {"page_size": 10}
-    if filter:
-        payload["filter"] = filter
-
-    try:
-        response = requests.post(url, headers=headers, json=payload)
-        data = response.json()
-        return data.get("results", [])
-    except Exception as e:
-        print("❌ Failed to query Notion:", e)
-        return []
-
-@app.get("/tasks")
-def get_tasks():
-    filter = {
-        "property": "Type",
-        "select": {
-            "equals": "Task"
-        }
-    }
-    tasks = query_notion_database(NOTION_DATABASE_ID, filter)
-    formatted = [
-        {
-            "title": page["properties"]["Title"]["title"][0]["text"]["content"],
-            "id": page["id"]
-        }
-        for page in tasks
-        if "Title" in page["properties"] and page["properties"]["Title"]["title"]
-    ]
-    return {"tasks": formatted}
-
 @app.get("/")
 def root():
     return {"status": "Echo is live 🚀"}
-
-
-from datetime import timedelta
-
-@app.get("/tasks-tomorrow")
-def get_tomorrow_tasks():
-    tomorrow = (datetime.utcnow() + timedelta(days=1)).date().isoformat()
-    filter = {
-        "and": [
-            {"property": "Type", "select": {"equals": "Task"}},
-            {"property": "Date", "date": {"equals": tomorrow}}
-        ]
-    }
-    tasks = query_notion_database(NOTION_DATABASE_ID, filter)
-    formatted = [
-        {
-            "title": page["properties"]["Title"]["title"][0]["text"]["content"],
-            "id": page["id"]
-        }
-        for page in tasks
-        if "Title" in page["properties"] and page["properties"]["Title"]["title"]
-    ]
-    return {"date": tomorrow, "tasks": formatted}
