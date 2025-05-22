@@ -11,9 +11,7 @@ from openai import OpenAI
 from contextlib import contextmanager
 from typing import Generator, List
 
-# Load environment variables
 load_dotenv()
-
 app = FastAPI()
 
 NOTION_TOKEN = os.getenv("NOTION_TOKEN")
@@ -236,17 +234,13 @@ async def telegram_webhook(req: Request):
         tasks_data = get_tomorrow_tasks()
         titles = [task["title"] for task in tasks_data.get("tasks", [])]
         summary = summarize_tasks_for_telegram(titles)
-        send_telegram_message(chat_id, f"Echo 🤖:\n
-{summary}\n
-🗓️ From Notion.")
-
+        send_telegram_message(chat_id, f"Echo 🤖:\n{summary}\n🗓️ From Notion.")
 
         store_message(chat_id, sender, text)
         context = get_recent_messages(chat_id)
         ai_response = await analyze_message(text, context)
 
-        telegram_success = send_telegram_message(chat_id, f"Echo 🤖: {ai_response}
-📝 Saved to Notion.")
+        telegram_success = send_telegram_message(chat_id, f"Echo 🤖: {ai_response}\n📝 Saved to Notion.")
         notion_success = add_to_notion(
             title=f"{sender} on Telegram",
             content=f"{text}\n\n---\n\n{ai_response}",
