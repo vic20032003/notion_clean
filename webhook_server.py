@@ -75,7 +75,7 @@ def send_telegram_message(chat_id: str, text: str) -> bool:
         print(f"Error sending Telegram message: {e}")
         return False
 
-def add_to_notion(title: str, content: str, notion_type: str = "User Message", tags: list = None, chat_id: str = None) -> bool:
+def add_to_notion(title: str, content: str, notion_type: str = "User Message", tags: list = None, chat_id: str = None, parent_id: str = None) -> bool:
     if tags is None:
         tags = []
 
@@ -88,7 +88,7 @@ def add_to_notion(title: str, content: str, notion_type: str = "User Message", t
     }
 
     data = {
-        "parent": {"database_id": NOTION_DATABASE_ID},
+        "parent": {"database_id": NOTION_DATABASE_ID} if not parent_id else {"page_id": parent_id},
         "properties": {
             "Title": {
                 "title": [{"text": {"content": title}}]
@@ -124,6 +124,17 @@ def add_to_notion(title: str, content: str, notion_type: str = "User Message", t
     except Exception as e:
         print(f"Exception while posting to Notion: {e}")
         return False
+
+@app.post("/notion/new-page")
+def create_custom_page(payload: dict):
+    title = payload.get("title", "Untitled")
+    content = payload.get("content", "")
+    notion_type = payload.get("type", "Note")
+    tags = payload.get("tags", [])
+    chat_id = payload.get("chat_id", "manual")
+    parent_id = payload.get("parent_id")
+    result = add_to_notion(title, content, notion_type, tags, chat_id, parent_id)
+    return {"created": result}
 
 def log_to_file(chat_id: str, sender: str, user_message: str, echo_reply: str):
     try:
@@ -165,7 +176,6 @@ async def analyze_message(message: str, context: list) -> str:
 def summarize_tasks_for_telegram(task_list: list[str]) -> str:
     if not task_list:
         return "✅ You have no tasks scheduled for tomorrow. Enjoy your day!"
-
     bullet_list = "\n".join(f"- {task}" for task in task_list)
     prompt = f"Summarize the following task list in a clear, helpful Telegram message:\n\n{bullet_list}\n\nBe concise, friendly, and action-oriented."
     response = client.chat.completions.create(
@@ -218,23 +228,24 @@ async def telegram_webhook(req: Request):
         message = body.get("message")
         if not message:
             return {"status": "no message"}
-
         chat_id = str(message["chat"]["id"])
         sender = message["from"].get("username", "Anonymous")
         text = message.get("text", "")
 
-        if "tomorrow" in text.lower() and any(k in text.lower() for k in ["task", "todo", "to-do", "schedule"]):
-            tasks_data = get_tomorrow_tasks()
-            titles = [task["title"] for task in tasks_data.get("tasks", [])]
-            summary = summarize_tasks_for_telegram(titles)
-            send_telegram_message(chat_id, f"Echo 🤖:\n{summary}\n🗓️ From Notion.")
-            return JSONResponse({"ok": True, "summary": summary})
+        # Check Notion regardless of message
+        tasks_data = get_tomorrow_tasks()
+        titles = [task["title"] for task in tasks_data.get("tasks", [])]
+        summary = summarize_tasks_for_telegram(titles)
+        send_telegram_message(chat_id, f"Echo 🤖:
+{summary}
+🗓️ From Notion.")
 
         store_message(chat_id, sender, text)
         context = get_recent_messages(chat_id)
         ai_response = await analyze_message(text, context)
 
-        telegram_success = send_telegram_message(chat_id, f"Echo 🤖: {ai_response}\n📝 Saved to Notion.")
+        telegram_success = send_telegram_message(chat_id, f"Echo 🤖: {ai_response}
+📝 Saved to Notion.")
         notion_success = add_to_notion(
             title=f"{sender} on Telegram",
             content=f"{text}\n\n---\n\n{ai_response}",
