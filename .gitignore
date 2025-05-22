@@ -6,3 +6,5 @@ venv/2~
 venv/
 *.bak
 .env
+.env
+.env.save
