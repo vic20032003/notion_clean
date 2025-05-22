@@ -236,9 +236,10 @@ async def telegram_webhook(req: Request):
         tasks_data = get_tomorrow_tasks()
         titles = [task["title"] for task in tasks_data.get("tasks", [])]
         summary = summarize_tasks_for_telegram(titles)
-        send_telegram_message(chat_id, f"Echo 🤖:
-{summary}
+        send_telegram_message(chat_id, f"Echo 🤖:\n
+{summary}\n
 🗓️ From Notion.")
+
 
         store_message(chat_id, sender, text)
         context = get_recent_messages(chat_id)
