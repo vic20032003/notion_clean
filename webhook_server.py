@@ -1,4 +1,5 @@
-from fastapi import FastAPI, Request, Depends
+
+from fastapi import FastAPI, Request
 from pydantic import BaseModel
 from dotenv import load_dotenv
 import os
@@ -229,7 +230,6 @@ class TaskPayload(BaseModel):
     date: str | None = None
     tags: list[str] | None = []
 
-# Routes
 @app.post("/task")
 async def receive_task(payload: TaskPayload):
     success = add_to_notion(
@@ -272,6 +272,46 @@ def notion_check():
             "success": False,
             "error": str(e)
         }
+
+# Query Notion Tasks
+def query_notion_database(database_id, filter=None):
+    url = f"https://api.notion.com/v1/databases/{database_id}/query"
+    headers = {
+        "Authorization": f"Bearer {NOTION_TOKEN}",
+        "Notion-Version": "2022-06-28",
+        "Content-Type": "application/json"
+    }
+
+    payload = {"page_size": 10}
+    if filter:
+        payload["filter"] = filter
+
+    try:
+        response = requests.post(url, headers=headers, json=payload)
+        data = response.json()
+        return data.get("results", [])
+    except Exception as e:
+        print("❌ Failed to query Notion:", e)
+        return []
+
+@app.get("/tasks")
+def get_tasks():
+    filter = {
+        "property": "Type",
+        "select": {
+            "equals": "Task"
+        }
+    }
+    tasks = query_notion_database(NOTION_DATABASE_ID, filter)
+    formatted = [
+        {
+            "title": page["properties"]["Title"]["title"][0]["text"]["content"],
+            "id": page["id"]
+        }
+        for page in tasks
+        if "Title" in page["properties"] and page["properties"]["Title"]["title"]
+    ]
+    return {"tasks": formatted}
 
 @app.get("/")
 def root():
