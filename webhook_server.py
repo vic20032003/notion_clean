@@ -207,6 +207,31 @@ def summarize_tasks_for_telegram(task_list: list[str]) -> str:
     )
     return response.choices[0].message.content.strip()
 
+from fastapi.responses import JSONResponse
+
+# Summarize Notion tasks for Telegram
+def summarize_tasks_for_telegram(task_list: list[str]) -> str:
+    if not task_list:
+        return "✅ You have no tasks scheduled for tomorrow. Enjoy your day!"
+
+    bullet_list = "
+".join(f"- {task}" for task in task_list)
+    prompt = (
+        "Summarize the following task list in a clear, helpful Telegram message:
+
+"
+        f"{bullet_list}
+
+"
+        "Be concise, friendly, and action-oriented."
+    )
+
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[{"role": "user", "content": prompt}]
+    )
+    return response.choices[0].message.content.strip()
+
 @app.post("/telegram")
 async def telegram_webhook(req: Request):
     try:
@@ -219,21 +244,28 @@ async def telegram_webhook(req: Request):
         sender = message["from"].get("username", "Anonymous")
         text = message.get("text", "")
 
-        if "tomorrow" in text.lower() and any(k in text.lower() for k in ["task", "todo", "to-do"]):
+        if "tomorrow" in text.lower() and any(k in text.lower() for k in ["task", "todo", "to-do", "schedule"]):
             tasks_data = get_tomorrow_tasks()
             titles = [task["title"] for task in tasks_data.get("tasks", [])]
             summary = summarize_tasks_for_telegram(titles)
-            send_telegram_message(chat_id, f"Echo 🤖:\n{summary}\n🗓️ From Notion.")
+            send_telegram_message(chat_id, f"Echo 🤖:
+{summary}
+🗓️ From Notion.")
             return JSONResponse({"ok": True, "summary": summary})
 
         store_message(chat_id, sender, text)
         context = get_recent_messages(chat_id)
         ai_response = await analyze_message(text, context)
 
-        telegram_success = send_telegram_message(chat_id, f"Echo 🤖: {ai_response}\n📝 Saved to Notion.")
+        telegram_success = send_telegram_message(chat_id, f"Echo 🤖: {ai_response}
+📝 Saved to Notion.")
         notion_success = add_to_notion(
             title=f"{sender} on Telegram",
-            content=f"{text}\n\n---\n\n{ai_response}",
+            content=f"{text}
+
+---
+
+{ai_response}",
             notion_type="User Message",
             tags=["Telegram"],
             chat_id=chat_id
