@@ -187,8 +187,68 @@ async def analyze_message(message: str, context: list) -> str:
         return "I apologize, but I encountered an error processing your message."
 
 # Telegram Webhook
+from fastapi.responses import JSONResponse
+
+# Summarize Notion tasks for Telegram
+def summarize_tasks_for_telegram(task_list: list[str]) -> str:
+    if not task_list:
+        return "✅ You have no tasks scheduled for tomorrow. Enjoy your day!"
+
+    bullet_list = "\n".join(f"- {task}" for task in task_list)
+    prompt = (
+        "Summarize the following task list in a clear, helpful Telegram message:\n\n"
+        f"{bullet_list}\n\n"
+        "Be concise, friendly, and action-oriented."
+    )
+
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[{"role": "user", "content": prompt}]
+    )
+    return response.choices[0].message.content.strip()
+
 @app.post("/telegram")
 async def telegram_webhook(req: Request):
+    try:
+        body = await req.json()
+        message = body.get("message")
+        if not message:
+            return {"status": "no message"}
+
+        chat_id = str(message["chat"]["id"])
+        sender = message["from"].get("username", "Anonymous")
+        text = message.get("text", "")
+
+        if "tomorrow" in text.lower() and any(k in text.lower() for k in ["task", "todo", "to-do"]):
+            tasks_data = get_tomorrow_tasks()
+            titles = [task["title"] for task in tasks_data.get("tasks", [])]
+            summary = summarize_tasks_for_telegram(titles)
+            send_telegram_message(chat_id, f"Echo 🤖:\n{summary}\n🗓️ From Notion.")
+            return JSONResponse({"ok": True, "summary": summary})
+
+        store_message(chat_id, sender, text)
+        context = get_recent_messages(chat_id)
+        ai_response = await analyze_message(text, context)
+
+        telegram_success = send_telegram_message(chat_id, f"Echo 🤖: {ai_response}\n📝 Saved to Notion.")
+        notion_success = add_to_notion(
+            title=f"{sender} on Telegram",
+            content=f"{text}\n\n---\n\n{ai_response}",
+            notion_type="User Message",
+            tags=["Telegram"],
+            chat_id=chat_id
+        )
+        log_success = log_to_file(chat_id, sender, text, ai_response)
+
+        return {
+            "ok": True,
+            "telegram_sent": telegram_success,
+            "notion_saved": notion_success,
+            "logged": log_success
+        }
+    except Exception as e:
+        print(f"Error in webhook: {e}")
+        return {"ok": False, "error": str(e)}
     try:
         body = await req.json()
         message = body.get("message")
