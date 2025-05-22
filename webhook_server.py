@@ -58,19 +58,36 @@ def send_telegram_message(chat_id, text):
     payload = {"chat_id": chat_id, "text": text}
     requests.post(url, json=payload)
 
-# === Notion Integration ===
-def add_to_notion(title, content):
+# === Notion Integration (Updated Version) ===
+def add_to_notion(title, content, notion_type="User Message", tags=None, chat_id=None):
+    if tags is None:
+        tags = []
+
+    now_date = datetime.now().date().isoformat()
     url = "https://api.notion.com/v1/pages"
     headers = {
         "Authorization": f"Bearer {NOTION_TOKEN}",
         "Content-Type": "application/json",
-        "Notion-Version": "2022-06-28"  # Use the most recent supported version
+        "Notion-Version": "2022-06-28"
     }
+
     data = {
         "parent": {"database_id": NOTION_DATABASE_ID},
         "properties": {
             "Title": {
                 "title": [{"text": {"content": title}}]
+            },
+            "Date": {
+                "date": {"start": now_date}
+            },
+            "Type": {
+                "select": {"name": notion_type}
+            },
+            "Tags": {
+                "multi_select": [{"name": tag} for tag in tags]
+            },
+            "Chat ID": {
+                "rich_text": [{"text": {"content": str(chat_id)}}]
             }
         },
         "children": [{
@@ -120,7 +137,7 @@ def add_log_file_to_notion(chat_id):
         return False
     with open(log_filename, "r", encoding="utf-8") as file:
         content = file.read()
-    return add_to_notion(title=f"Log {date} from {chat_id}", content=content)
+    return add_to_notion(title=f"Log {date} from {chat_id}", content=content, notion_type="Log", tags=["Log"], chat_id=chat_id)
 
 # === GPT Message Analysis ===
 def analyze_message(message, context):
@@ -151,7 +168,13 @@ async def telegram_webhook(req: Request):
     ai_response = analyze_message(text, context)
 
     send_telegram_message(chat_id, f"Echo 🤖: {ai_response}\n📝 Saved to Notion.")
-    add_to_notion(f"{sender} on Telegram", f"{text}\n\n---\n\n{ai_response}")
+    add_to_notion(
+        title=f"{sender} on Telegram",
+        content=f"{text}\n\n---\n\n{ai_response}",
+        notion_type="User Message",
+        tags=["Telegram"],
+        chat_id=chat_id
+    )
     log_to_file(chat_id, sender, text, ai_response)
 
     return {"ok": True}
@@ -170,7 +193,7 @@ async def receive_task(payload: TaskPayload):
 @app.get("/test-notion")
 def test_notion():
     print("📡 /test-notion called")
-    success = add_to_notion("Test Title", "This came from /test-notion route")
+    success = add_to_notion("Test Title", "This came from /test-notion route", notion_type="Test", tags=["Debug"], chat_id="test")
     print("✅ Notion Success?", success)
     return {"success": success}
 
