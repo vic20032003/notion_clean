@@ -1,5 +1,5 @@
-from fastapi import FastAPI, Request, Body, HTTPException, Depends, status
-from fastapi.security import APIKeyHeader
+from fastapi import FastAPI, Request, Body, HTTPException, Depends, status, Security
+from fastapi.security import APIKeyHeader, HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
 import os
 import requests
@@ -8,31 +8,78 @@ import json
 from datetime import datetime, timedelta
 from openai import OpenAI
 from contextlib import contextmanager
-from typing import Generator, Optional, List, Dict, Any
+from typing import Generator, Optional, List, Dict, Any, Annotated
 from textblob import TextBlob
 from pydantic import BaseModel, Field
 import logging
+import logging.config
 import uuid
-import hashlib
-from enum import Enum
 import httpx
+from enum import Enum
 
-# === Configuration and Initialization ===
+# Load environment variables early
 load_dotenv()
-app = FastAPI(
-    title="Echo Assistant API",
-    description="A comprehensive AI assistant with Notion integration and Telegram interface",
-    version="2.0",
-    docs_url="/docs",
-    redoc_url=None
-)
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+# Define the logging configuration
+LOGGING_CONFIG = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "default": {
+            "format": "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        },
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "default",
+            "level": "DEBUG",
+            "stream": "ext://sys.stdout",
+        },
+    },
+    "loggers": {
+        "": {
+            "handlers": ["console"],
+            "level": os.getenv("LOG_LEVEL", "INFO"),
+            "propagate": False,
+        },
+        "uvicorn": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": False,
+        },
+        "uvicorn.error": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": False,
+        },
+        "uvicorn.access": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": False,
+        },
+    },
+}
+
+# Apply the logging configuration
+logging.config.dictConfig(LOGGING_CONFIG)
 logger = logging.getLogger(__name__)
+
+# === Security Classes ===
+class OnlyTelegramNetworkWithSecret:
+    def __init__(self, real_secret: str):
+        self.real_secret = real_secret
+
+    async def __call__(self, credentials: HTTPAuthorizationCredentials = Security(HTTPBearer())):
+        if credentials.credentials != self.real_secret:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid webhook secret"
+            )
+        return credentials.credentials
+
+# Initialize FastAPI application
+app = FastAPI()
 
 # === Constants and Enums ===
 class MessageType(str, Enum):
@@ -84,36 +131,23 @@ class TaskCreate(BaseModel):
     priority: Optional[PriorityLevel] = PriorityLevel.MEDIUM
     tags: Optional[List[str]] = None
 
-# === Security ===
-api_key_header = APIKeyHeader(name="X-API-KEY")
-
-def get_api_key(api_key: str = Depends(api_key_header)):
-    if api_key != os.getenv("API_SECRET_KEY"):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid API Key"
-        )
-    return api_key
-
-# === Enhanced Configuration ===
+# === Configuration ===
 class Config:
     def __init__(self):
         self.NOTION_TOKEN = os.getenv("NOTION_TOKEN")
         self.OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
         self.TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
         self.API_SECRET_KEY = os.getenv("API_SECRET_KEY")
+        self.TELEGRAM_WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET")
         self.DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() == "true"
         
-        # Initialize Notion IDs with normalization
         self.NOTION_DATABASE_ID = self.normalize_notion_id(os.getenv("NOTION_DATABASE_ID"))
         self.NOTION_CONTACTS_ID = self.normalize_notion_id(os.getenv("NOTION_CONTACTS_ID"))
         self.NOTION_FEEDBACK_ID = self.normalize_notion_id(os.getenv("NOTION_FEEDBACK_ID", "")) or self.NOTION_DATABASE_ID
         
-        # Rate limiting settings
-        self.RATE_LIMIT = int(os.getenv("RATE_LIMIT", "60"))  # requests per minute
-        self.RATE_LIMIT_WINDOW = int(os.getenv("RATE_LIMIT_WINDOW", "60"))  # seconds
+        self.RATE_LIMIT = int(os.getenv("RATE_LIMIT", "60"))
+        self.RATE_LIMIT_WINDOW = int(os.getenv("RATE_LIMIT_WINDOW", "60"))
         
-        # Validate required configuration
         self.validate_config()
         
     @staticmethod
@@ -132,14 +166,16 @@ class Config:
             ("OPENAI_API_KEY", self.OPENAI_API_KEY),
             ("TELEGRAM_TOKEN", self.TELEGRAM_TOKEN),
             ("API_SECRET_KEY", self.API_SECRET_KEY),
+            ("TELEGRAM_WEBHOOK_SECRET", self.TELEGRAM_WEBHOOK_SECRET),
         ]
         missing = [name for name, val in required if not val]
         if missing:
             raise RuntimeError(f"Missing required environment variables: {', '.join(missing)}")
 
 config = Config()
+webhook_security = OnlyTelegramNetworkWithSecret(real_secret=config.TELEGRAM_WEBHOOK_SECRET)
 
-# === Enhanced Database Layer ===
+# === Database Manager ===
 class DatabaseManager:
     def __init__(self, db_path: str = "./chat_memory.db"):
         self.db_path = db_path
@@ -157,8 +193,6 @@ class DatabaseManager:
     def init_db(self):
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            
-            # Messages table
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS messages (
                     id TEXT PRIMARY KEY,
@@ -171,8 +205,6 @@ class DatabaseManager:
                     is_archived BOOLEAN DEFAULT FALSE
                 )
             """)
-            
-            # Feedback table
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS feedback (
                     id TEXT PRIMARY KEY,
@@ -183,16 +215,12 @@ class DatabaseManager:
                     timestamp TEXT
                 )
             """)
-            
-            # Privacy settings
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS privacy_optout (
                     chat_id TEXT PRIMARY KEY,
                     timestamp TEXT
                 )
             """)
-            
-            # Rate limiting
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS rate_limits (
                     ip_address TEXT PRIMARY KEY,
@@ -200,8 +228,6 @@ class DatabaseManager:
                     last_request_time TEXT
                 )
             """)
-            
-            # User sessions
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS user_sessions (
                     session_id TEXT PRIMARY KEY,
@@ -211,17 +237,14 @@ class DatabaseManager:
                     last_accessed TEXT
                 )
             """)
-            
-            # Indexes
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_messages_chat_id ON messages(chat_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_feedback_chat_id ON feedback(chat_id)")
-            
             conn.commit()
 
 db_manager = DatabaseManager()
 
-# === Enhanced Notion Client ===
+# === Notion Client ===
 class NotionClient:
     def __init__(self, api_token: str):
         self.api_token = api_token
@@ -305,7 +328,6 @@ class NotionClient:
                 return False
 
     async def get_page_children(self, block_id: str, page_size: int = 10) -> Dict[str, Any]:
-        """Retrieve child blocks of a Notion page/block for content extraction."""
         url = f"{self.base_url}/blocks/{block_id}/children"
         params = {"page_size": page_size}
         async with httpx.AsyncClient() as client:
@@ -397,7 +419,6 @@ Message: "{text}"
         return any(keyword in text_lower for keyword in self.filtered_keywords)
 
     async def summarize_memories(self, memories: List[str]) -> str:
-        """Summarize long-term memories into concise bullet points for context injection."""
         prompt = (
             "Summarize the following past conversation snippets into concise bullet points:\n"
             + "\n\n".join(memories)
@@ -478,9 +499,7 @@ class EchoAssistant:
         }
     
     async def process_message(self, chat_id: str, text: str, sender: str = "User"):
-        """Main message processing pipeline"""
         try:
-            # Step 1: Store message in database
             message_id = str(uuid.uuid4())
             sentiment = ai_service.analyze_sentiment(text)
             
@@ -492,26 +511,21 @@ class EchoAssistant:
                 )
                 conn.commit()
             
-            # Step 2: Check for commands
             if text.startswith('/'):
                 return await self.handle_command(chat_id, text, sender)
             
-            # Step 3: Check for filtered content
             if ai_service.is_filtered(text):
                 await telegram_bot.send_message(chat_id, "🚫 This message was filtered for security reasons.")
                 return {"status": "filtered"}
             
-            # Step 4: Extract intent
             intent_data = await ai_service.extract_intent(text)
             intent = intent_data.get("intent", "none")
             entities = intent_data.get("entities", {})
             confidence = intent_data.get("confidence", 0)
             
-            # Step 5: Handle intent if confident
             if intent in self.intent_handlers and confidence > 70 and not intent_data.get("needs_confirmation"):
                 return await self.intent_handlers[intent](chat_id, entities)
             
-            # Step 6: Retrieve long-term memories and generate conversational response
             memories = await self.get_long_term_memories(chat_id)
             memory_intro = None
             if memories:
@@ -529,7 +543,6 @@ class EchoAssistant:
                 context_messages + [{"role": "user", "content": text}]
             )
             
-            # Step 7: Store and send response
             await self.store_and_send_response(chat_id, ai_response, text)
             
             return {"status": "processed", "intent": intent}
@@ -540,7 +553,6 @@ class EchoAssistant:
             return {"status": "error", "error": str(e)}
     
     async def get_chat_context(self, chat_id: str, limit: int = 10) -> List[Dict[str, str]]:
-        """Retrieve conversation context for AI response generation"""
         with db_manager.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
@@ -557,7 +569,6 @@ class EchoAssistant:
         return context
 
     async def get_long_term_memories(self, chat_id: str, limit: int = 5) -> List[str]:
-        """Retrieve long-term memory snippets from Notion for context injection."""
         try:
             results = await notion_client.query_database(
                 database_id=config.NOTION_DATABASE_ID,
@@ -580,11 +591,9 @@ class EchoAssistant:
             return []
     
     async def store_and_send_response(self, chat_id: str, response_text: str, original_message: str):
-        """Store AI response and send to user"""
         message_id = str(uuid.uuid4())
         sentiment = ai_service.analyze_sentiment(response_text)
         
-        # Store in local DB
         with db_manager.get_connection() as conn:
             conn.execute(
                 "INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -593,7 +602,6 @@ class EchoAssistant:
             )
             conn.commit()
         
-        # Store in Notion
         try:
             await notion_client.create_page(
                 parent_id=config.NOTION_DATABASE_ID,
@@ -619,11 +627,9 @@ class EchoAssistant:
         except Exception as e:
             logger.error(f"Failed to save to Notion: {str(e)}")
         
-        # Send to user
         await telegram_bot.send_message(chat_id, response_text)
     
     async def handle_command(self, chat_id: str, command: str, sender: str):
-        """Handle slash commands"""
         command = command.lower().strip()
         
         if command == "/start":
@@ -663,9 +669,7 @@ class EchoAssistant:
         await telegram_bot.send_message(chat_id, response, parse_mode="HTML")
         return {"status": "command_processed"}
     
-    # Intent handlers would be implemented here...
     async def handle_create_task(self, chat_id: str, entities: Dict):
-        """Handle task creation intent"""
         try:
             title = entities.get("title", "New Task")
             due_date = entities.get("due_date")
@@ -690,7 +694,6 @@ class EchoAssistant:
             return {"status": "error", "error": str(e)}
 
     async def handle_update_task(self, chat_id: str, entities: Dict[str, Any]):
-        """Handle task update intent"""
         try:
             task_id = entities.get("task_id")
             update_fields = entities.get("update_fields", {})
@@ -702,7 +705,6 @@ class EchoAssistant:
                 properties["Title"] = {"title": [{"text": {"content": update_fields["title"]}}]}
             if "status" in update_fields:
                 properties["Status"] = {"select": {"name": update_fields["status"]}}
-            # Add more property mappings here as needed
             updated = await notion_client.update_page(task_id, properties)
             if updated:
                 await telegram_bot.send_message(chat_id, "🔄 Task updated.")
@@ -715,9 +717,7 @@ class EchoAssistant:
             return {"status": "error", "error": str(e)}
 
     async def handle_get_tasks(self, chat_id: str, entities: Dict[str, Any]):
-        """Handle get_tasks intent: list tasks from Notion."""
         try:
-            # Query Notion for tasks in the main database with Type = "Task"
             results = await notion_client.query_database(
                 database_id=config.NOTION_DATABASE_ID,
                 filter_obj={"property": "Type", "select": {"equals": "Task"}}
@@ -725,7 +725,6 @@ class EchoAssistant:
             if not results:
                 await telegram_bot.send_message(chat_id, "🗒️ You have no tasks.")
                 return {"status": "no_tasks"}
-            # Build a summary list
             lines = []
             for page in results:
                 title = page["properties"].get("Title", {}).get("title", [])
@@ -741,7 +740,6 @@ class EchoAssistant:
             return {"status": "error", "error": str(e)}
 
     async def handle_add_event(self, chat_id: str, entities: Dict[str, Any]):
-        """Handle add_event intent: create an event in Notion."""
         try:
             title = entities.get("title", "New Event")
             date = entities.get("date")
@@ -751,7 +749,6 @@ class EchoAssistant:
             participants = entities.get("participants", [])
             description = entities.get("description", "")
 
-            # Build Notion page properties
             properties = {
                 "Title": {"title": [{"text": {"content": title}}]},
                 "Type": {"select": {"name": "Event"}},
@@ -761,7 +758,6 @@ class EchoAssistant:
             if location:
                 properties["Location"] = {"rich_text": [{"text": {"content": location}}]}
 
-            # Children blocks for description and participants
             children = []
             if description:
                 children.append({
@@ -775,7 +771,6 @@ class EchoAssistant:
                     "paragraph": {"rich_text": [{"text": {"content": f"Participants: {participants_str}"}}]}
                 })
 
-            # Create the event in Notion
             page = await notion_client.create_page(
                 parent_id=config.NOTION_DATABASE_ID,
                 properties=properties,
@@ -792,11 +787,13 @@ class EchoAssistant:
 echo_assistant = EchoAssistant()
 
 # === API Endpoints ===
-@app.post("/telegram")
-async def telegram_webhook(update: TelegramWebhook, request: Request):
-    """Handle incoming Telegram messages"""
+@app.post("/telegram/{secret}", dependencies=[Depends(webhook_security)])
+async def telegram_webhook(request: Request):
     try:
-        message = update.message or update.edited_message
+        data = await request.json()
+        logger.info(f"Received Telegram update: {data}")
+        
+        message = data.get("message") or data.get("edited_message")
         if not message:
             return {"status": "ignored"}
         
@@ -807,20 +804,19 @@ async def telegram_webhook(update: TelegramWebhook, request: Request):
         if not text:
             return {"status": "no_text"}
         
-        # Show typing indicator
         await telegram_bot.send_typing_indicator(chat_id)
-        
-        # Process message
         result = await echo_assistant.process_message(chat_id, text, sender)
         return result
     
     except Exception as e:
-        logger.error(f"Webhook error: {str(e)}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        logger.error(f"Webhook processing error: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error processing webhook"
+        )
 
 @app.post("/query-notion", dependencies=[Depends(get_api_key)])
 async def query_notion(query: NotionQuery):
-    """Query Notion database with filters"""
     try:
         database_id = query.database_id or config.NOTION_DATABASE_ID
         results = await notion_client.query_database(
@@ -830,7 +826,6 @@ async def query_notion(query: NotionQuery):
             page_size=query.page_size
         )
         
-        # Process results into a cleaner format
         processed = []
         for page in results:
             processed.append({
@@ -850,7 +845,6 @@ async def query_notion(query: NotionQuery):
 
 @app.post("/create-contact", dependencies=[Depends(get_api_key)])
 async def create_contact(contact: ContactCreate):
-    """Create a new contact in Notion"""
     try:
         result = await notion_client.create_page(
             parent_id=config.NOTION_CONTACTS_ID,
@@ -870,7 +864,6 @@ async def create_contact(contact: ContactCreate):
 
 @app.post("/create-task", dependencies=[Depends(get_api_key)])
 async def api_create_task(task: TaskCreate):
-    """API endpoint for task creation"""
     try:
         result = await echo_assistant.handle_create_task(
             chat_id="api",
@@ -890,7 +883,6 @@ async def api_create_task(task: TaskCreate):
 
 # === Utility Methods ===
 def _process_notion_properties(properties: Dict) -> Dict:
-    """Convert Notion properties to a simpler format"""
     processed = {}
     for key, prop in properties.items():
         prop_type = prop.get("type")
@@ -912,48 +904,3 @@ def _process_notion_properties(properties: Dict) -> Dict:
             processed[key] = prop["url"]
         elif prop_type == "email":
             processed[key] = prop["email"]
-        elif prop_type == "phone_number":
-            processed[key] = prop["phone_number"]
-        else:
-            processed[key] = str(prop)
-    return processed
-
-# === Startup Event ===
-@app.on_event("startup")
-async def startup():
-    """Initialize the application"""
-    logger.info("Starting Echo Assistant API")
-    
-    # Verify Notion connection
-    try:
-        if config.NOTION_DATABASE_ID:
-            await notion_client.query_database(config.NOTION_DATABASE_ID, page_size=1)
-            logger.info("Notion connection verified")
-    except Exception as e:
-        logger.error(f"Notion connection failed: {str(e)}")
-        raise
-    
-    # Verify Telegram connection
-    try:
-        if await telegram_bot.send_message("1", "System startup test (this won't be delivered)"):
-            logger.info("Telegram connection verified")
-    except Exception as e:
-        logger.error(f"Telegram connection failed: {str(e)}")
-        raise
-    
-    logger.info("Echo Assistant API ready")
-
-# === Root Endpoint ===
-@app.get("/")
-async def root():
-    return {
-        "status": "Echo Assistant API is running",
-        "version": "2.0",
-        "docs": "/docs"
-    }@app.post('/telegram')
-async def handle_update(update: TelegramWebhook):
-    logger.info(f'Received update: {update}')
-    return {'status': 'ok'}@app.post('/telegram')
-async def telegram_webhook(update: TelegramWebhook):
-    logger.info(f'Telegram webhook called with update: {update}')
-    return {'status': 'OK'}
