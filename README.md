@@ -6,10 +6,12 @@ This FastAPI service connects a Telegram bot to your Notion workspace. It parses
 
 You can configure the service locally with a `.env` file (using `python-dotenv`) or via your hosting platform (e.g. Render) by setting the same keys.
 
+> **Note:** Variable names are case‑sensitive. Use **NOTION_TOKEN** (not `NOTION_API_KEY`) and **TELEGRAM_TOKEN** (not `TELEGRAM_BOT_TOKEN`).
+
 | Variable             | Description                                                                                          |
 |----------------------|------------------------------------------------------------------------------------------------------|
-| `NOTION_TOKEN`       | Your Notion integration secret (scope: read/write pages and databases).                                |
-| `NOTION_DATABASE_ID` | The ID of your primary Notion database (the part before `?v=` in the database URL).                   |
+| `NOTION_TOKEN`       | Your Notion integration token (scope: read/write pages and databases).                                |
+| `NOTION_DATABASE_ID` | The hyphenated ID of your primary Notion database (the part before `?v=` in the database URL).       |
 | `NOTION_CONTACTS_ID` | *(optional)* ID of a secondary contacts database (if you use contact‑management features).           |
 | `NOTION_FEEDBACK_ID` | *(optional)* ID of a feedback database (defaults to `NOTION_DATABASE_ID` if unset).                  |
 | `OPENAI_API_KEY`     | Your OpenAI API key (used for intent parsing and message replies).                                   |
@@ -29,10 +31,16 @@ Make sure you've added your integration to the database and granted it the prope
 
 ## Local Development
 
-1. Copy or create a `.env` in the project root:
+1. Copy or create a `.env` in the project root (do **not** commit this file):
    ```ini
-   NOTION_TOKEN=ntn_xxxYOUR_TOKENxxx
+   # Your Notion integration token and database IDs
+   NOTION_TOKEN=ntn_xxxYOUR_NOTION_TOKENxxx
    NOTION_DATABASE_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+   # (optional) secondary DBs
+   NOTION_CONTACTS_ID=yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy
+   NOTION_FEEDBACK_ID=zzzzzzzz-zzzz-zzzz-zzzz-zzzzzzzzzzzz
+
+   # OpenAI and Telegram credentials
    OPENAI_API_KEY=sk-…YOUR_OPENAI_KEY…
    TELEGRAM_TOKEN=123456:ABC‑…YOUR_TELEGRAM_BOT_TOKEN…
    ```
