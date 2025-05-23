@@ -787,22 +787,29 @@ class EchoAssistant:
 echo_assistant = EchoAssistant()
 
 # === API Endpoints ===
-@app.post("/telegram/{secret}", dependencies=[Depends(webhook_security)])
-async def telegram_webhook(request: Request):
+@app.post("/telegram/{secret}")
+async def telegram_webhook(secret: str, request: Request):
+    if secret != os.getenv("TELEGRAM_WEBHOOK_SECRET"):
+        raise HTTPException(status_code=401, detail="Unauthorized")
     try:
         data = await request.json()
         logger.info(f"Received Telegram update: {data}")
+        
         message = data.get("message") or data.get("edited_message")
         if not message:
             return {"status": "ignored"}
+        
         chat_id = str(message["chat"]["id"])
         sender = message.get("from", {}).get("username", "User")
         text = message.get("text")
+        
         if not text:
             return {"status": "no_text"}
+        
         await telegram_bot.send_typing_indicator(chat_id)
         result = await echo_assistant.process_message(chat_id, text, sender)
         return result
+    
     except Exception as e:
         logger.error(f"Webhook processing error: {str(e)}", exc_info=True)
         raise HTTPException(
@@ -820,13 +827,15 @@ async def query_notion(query: NotionQuery):
             sorts=query.sorts,
             page_size=query.page_size
         )
+        
         processed = []
         for page in results:
             processed.append({
                 "id": page.get("id"),
                 "url": page.get("url"),
-                "properties": _process_notion_properties(page.get("properties", {}))
+                "properties": self._process_notion_properties(page.get("properties", {}))
             })
+        
         return {
             "success": True,
             "count": len(processed),
@@ -897,38 +906,22 @@ def _process_notion_properties(properties: Dict) -> Dict:
             processed[key] = prop["url"]
         elif prop_type == "email":
             processed[key] = prop["email"]
-    return processed
 
-# === Startup Event ===
-@app.on_event("startup")
-async def startup():
-    logger.info("Starting Echo Assistant API")
-    try:
-        if config.NOTION_DATABASE_ID:
-            await notion_client.query_database(config.NOTION_DATABASE_ID, page_size=1)
-            logger.info("Notion connection verified")
-    except Exception as e:
-        logger.error(f"Notion connection failed: {str(e)}")
-        raise
-    try:
-        if await telegram_bot.send_message("1", "System startup test (this won't be delivered)"):
-            logger.info("Telegram connection verified")
-    except Exception as e:
-        logger.error(f"Telegram connection failed: {str(e)}")
-        raise
-    logger.info("Echo Assistant API ready")
+            
 
-# === Root Endpoint ===
-@app.get("/")
-async def root():
-    return {
-        "status": "Echo Assistant API is running",
-        "version": "2.0",
-        "docs": "/docs"
-    }
+    # Print all registered API routes at startup to verify correct endpoints are live.
+    def _show_routes():
+        print("Registered routes:", [route.path for route in app.routes])
 
-# Print all registered API routes at startup to verify correct endpoints are live.
-def _show_routes():
-    print("Registered routes:", [route.path for route in app.routes])
+    _show_routes(_process_notion_properties)
 
-_show_routes()
+Deploy with this line present
+
+def _process_notion_properties(properties: Dict) -> Dict:
+        # ... as before ...
+        return processed
+
+    def _show_routes():
+        print("Registered routes:", [route.path for route in app.routes])
+
+    _show_routes()
