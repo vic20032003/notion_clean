@@ -904,3 +904,20 @@ def _process_notion_properties(properties: Dict) -> Dict:
             processed[key] = prop["url"]
         elif prop_type == "email":
             processed[key] = prop["email"]
+
+    # Print all registered API routes at startup to verify correct endpoints are live.
+    def _show_routes():
+        print("Registered routes:", [route.path for route in app.routes])
+
+    _show_routes(_process_notion_properties)
+
+Deploy with this line present
+
+def _process_notion_properties(properties: Dict) -> Dict:
+        # ... as before ...
+        return processed
+
+    def _show_routes():
+        print("Registered routes:", [route.path for route in app.routes])
+
+    _show_routes()
