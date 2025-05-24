@@ -956,3 +956,14 @@ async def telegram_testhook(request: Request):
     logger.info(f"Received TEST Telegram update: {data}")
     print("TEST Telegram update:", data)
     return {"ok": True}
+
+
+# === Print all FastAPI routes to stderr on startup (for Render logs) ===
+import sys
+
+@app.on_event("startup")
+async def print_routes():
+    print("\n=== REGISTERED ROUTES (FastAPI) ===", file=sys.stderr)
+    for route in app.routes:
+        print(f"-> {route.path} [{','.join(route.methods)}]", file=sys.stderr)
+    print("====================================\n", file=sys.stderr)
