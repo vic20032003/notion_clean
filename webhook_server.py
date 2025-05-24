@@ -483,20 +483,52 @@ telegram_bot = TelegramBot(config.TELEGRAM_TOKEN)
 class EchoAssistant:
     def __init__(self):
         self.intent_handlers = {
-    "create_task": self.handle_create_task,
-    "update_task": self.handle_update_task,
-    "get_tasks": self.handle_get_tasks,
-    "add_event": self.handle_add_event,
-    # "list_events": self.handle_list_events,  <-- Remove or comment out
-    "add_note": self.handle_add_note,
-    "search_notes": self.handle_search_notes,
-    "set_reminder": self.handle_set_reminder,
-    "cancel_reminder": self.handle_cancel_reminder,
-    "send_feedback": self.handle_send_feedback,
-    "get_weather": self.handle_get_weather,
-    "manage_contact": self.handle_manage_contact,
-    "find_contact": self.handle_find_contact
-}
+            "create_task": self.handle_create_task,
+            "update_task": self.handle_update_task,
+            "get_tasks": self.handle_get_tasks,
+            "add_event": self.handle_add_event,
+            # "list_events": self.handle_list_events,  # not implemented
+            "search_notes": self.handle_search_notes,
+            "add_note": self.handle_add_note,
+            "set_reminder": self.handle_set_reminder,
+            "cancel_reminder": self.handle_cancel_reminder,
+            "send_feedback": self.handle_send_feedback,
+            "get_weather": self.handle_get_weather,
+            "manage_contact": self.handle_manage_contact,
+            "find_contact": self.handle_find_contact
+        }
+
+    async def handle_search_notes(self, chat_id: str, entities: dict):
+        await telegram_bot.send_message(chat_id, "🔍 Note search is not yet implemented.")
+        return {"status": "not_implemented"}
+
+    async def handle_add_note(self, chat_id: str, entities: dict):
+        await telegram_bot.send_message(chat_id, "📝 Note adding is not yet implemented.")
+        return {"status": "not_implemented"}
+
+    async def handle_set_reminder(self, chat_id: str, entities: dict):
+        await telegram_bot.send_message(chat_id, "⏰ Reminder setting is not yet implemented.")
+        return {"status": "not_implemented"}
+
+    async def handle_cancel_reminder(self, chat_id: str, entities: dict):
+        await telegram_bot.send_message(chat_id, "❌ Reminder canceling is not yet implemented.")
+        return {"status": "not_implemented"}
+
+    async def handle_send_feedback(self, chat_id: str, entities: dict):
+        await telegram_bot.send_message(chat_id, "💬 Feedback handling is not yet implemented.")
+        return {"status": "not_implemented"}
+
+    async def handle_get_weather(self, chat_id: str, entities: dict):
+        await telegram_bot.send_message(chat_id, "🌦️ Weather fetching is not yet implemented.")
+        return {"status": "not_implemented"}
+
+    async def handle_manage_contact(self, chat_id: str, entities: dict):
+        await telegram_bot.send_message(chat_id, "👤 Contact management is not yet implemented.")
+        return {"status": "not_implemented"}
+
+    async def handle_find_contact(self, chat_id: str, entities: dict):
+        await telegram_bot.send_message(chat_id, "🔎 Contact search is not yet implemented.")
+        return {"status": "not_implemented"}
     
     async def process_message(self, chat_id: str, text: str, sender: str = "User"):
         try:
