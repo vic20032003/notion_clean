@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Request, Body, HTTPException, Depends, status, Security
-from fastapi.security import APIKeyHeader, HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.security import APIKeyHeader
 from dotenv import load_dotenv
 import uvicorn
 import os
@@ -67,25 +67,45 @@ logging.config.dictConfig(LOGGING_CONFIG)
 logger = logging.getLogger(__name__)
 
 # === Security Classes ===
+# Telegram webhook secret header extractor
+telegram_secret_header = APIKeyHeader(name="X-Telegram-Bot-Api-Secret-Token", auto_error=False)
+
 class OnlyTelegramNetworkWithSecret:
     def __init__(self, real_secret: str):
         self.real_secret = real_secret
 
-    async def __call__(self, credentials: HTTPAuthorizationCredentials = Security(HTTPBearer())):
-        if credentials.credentials != self.real_secret:
+    async def __call__(self, token: str = Depends(telegram_secret_header)):
+        if not token or token != self.real_secret:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid webhook secret"
             )
-        return credentials.credentials
+        return token
 
 # Initialize FastAPI application
+
 app = FastAPI()
+
+# Log the loaded webhook secret (masked) at startup
+@app.on_event("startup")
+async def log_loaded_webhook_secret():
+    # Mask all but the last 4 characters of the webhook secret
+    secret = config.TELEGRAM_WEBHOOK_SECRET or ""
+    if secret:
+        masked = "*" * (len(secret) - 4) + secret[-4:]
+    else:
+        masked = "<not set>"
+    logger.info(f"Loaded TELEGRAM_WEBHOOK_SECRET (masked): {masked}")
 
 # Root endpoint for health checks
 @app.get("/")
 async def root():
     return {"message": "FastAPI server is running!"}
+
+# Health check endpoint
+@app.get("/health")
+async def health():
+    return {"status": "OK"}
 
 # === Constants and Enums ===
 class MessageType(str, Enum):
@@ -199,6 +219,8 @@ class DatabaseManager:
     def init_db(self):
         with self.get_connection() as conn:
             cursor = conn.cursor()
+            # Drop messages table to ensure correct schema
+            cursor.execute("DROP TABLE IF EXISTS messages")
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS messages (
                     id TEXT PRIMARY KEY,
@@ -455,8 +477,9 @@ class TelegramBot:
         payload = {
             "chat_id": chat_id,
             "text": text,
-            "parse_mode": parse_mode
         }
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
         
         async with httpx.AsyncClient() as client:
             try:
@@ -863,13 +886,12 @@ def _process_notion_properties(properties: Dict) -> Dict:
     return processed
 
 from fastapi import Security
-from fastapi.security import HTTPAuthorizationCredentials
 
 # === Telegram webhook endpoint ===
-@app.post("/telegram/{secret}")
-async def telegram_webhook(secret: str, request: Request):
-    if secret != config.TELEGRAM_WEBHOOK_SECRET:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+from fastapi import Depends
+
+@app.post("/telegram/webhook", dependencies=[Depends(webhook_security)])
+async def telegram_webhook(request: Request):
     data = await request.json()
     logger.info(f"Received Telegram update: {data}")
     # Dispatch to EchoAssistant
