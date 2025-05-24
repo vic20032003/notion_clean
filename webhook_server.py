@@ -1028,5 +1028,5 @@ async def print_routes():
 async def print_routes():
     print("\n=== REGISTERED ROUTES (FastAPI) ===", file=sys.stderr)
     for route in app.routes:
-        print(f"-> {route.path} [{','.join(route.methods)}]", file=sys.stderr)        uvicorn webhook_server:app --reload
+        print(f"-> {route.path} [{','.join(route.methods)}]", file=sys.stderr)
     print("====================================\n", file=sys.stderr)
