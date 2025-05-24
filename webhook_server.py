@@ -848,7 +848,7 @@ def _process_notion_properties(properties: Dict) -> Dict:
         elif prop_type == "select":
             processed[key] = prop["select"]["name"] if prop["select"] else None
         elif prop_type == "multi_select":
-            processed[key] = [item["name"] for item in prop["multi_select"]]
+            processed[key] = [item["name"] for item in prop["multi_select"]]s
         elif prop_type == "date":
             processed[key] = prop["date"]
         elif prop_type == "checkbox":
@@ -867,43 +867,15 @@ from fastapi import Security
 from fastapi.security import HTTPAuthorizationCredentials
 
 @app.post("/telegram/{secret}")
-async def telegram_webhook(
-    secret: str,
-    credentials: HTTPAuthorizationCredentials = Security(webhook_security),
-    request: Request = None,
-):
-    # Validate URL path secret
-    if secret != config.TELEGRAM_WEBHOOK_SECRET:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized URL secret")
+async def telegram_webhook(secret: str, request: Request):
+    # Validate the secret
+    if secret != os.getenv("TELEGRAM_WEBHOOK_SECRET"):
+        raise HTTPException(status_code=403, detail="Forbidden")
     
-    # Validate Authorization Bearer token secret (done by webhook_security)
-    if credentials.credentials != config.TELEGRAM_WEBHOOK_SECRET:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized header secret")
-    
-    try:
-        data = await request.json()
-        logger.info(f"Received Telegram update: {data}")
-
-        message = data.get("message") or data.get("edited_message")
-        if not message:
-            return {"status": "ignored"}
-
-        chat_id = str(message["chat"]["id"])
-        sender = message.get("from", {}).get("username", "User")
-        text = message.get("text")
-        if not text:
-            return {"status": "no_text"}
-
-        await telegram_bot.send_typing_indicator(chat_id)
-        result = await echo_assistant.process_message(chat_id, text, sender)
-        return result
-
-    except Exception as e:
-        logger.error(f"Webhook processing error: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error processing webhook"
-        )
+    # Process the request
+    data = await request.json()
+    logger.info(f"Received Telegram update: {data}")
+    return {"ok": True}
 
 @app.post("/query-notion", dependencies=[Depends(get_api_key)])
 async def query_notion(query: NotionQuery):
@@ -1014,15 +986,19 @@ async def telegram_testhook(request: Request):
 if __name__ == "__main__":
     uvicorn.run("webhook_server:app", host="0.0.0.0", port=8000, reload=True)
 
+@app.post("/telegram/{secret}")
+async def telegram_webhook(secret: str, request: Request):
+    # Validate the secret
+    if secret != os.getenv("TELEGRAM_WEBHOOK_SECRET"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    
+    # Process the request
+    data = await request.json()
+    logger.info(f"Received Telegram update: {data}")
+    return {"ok": True}
+
 # === Print all FastAPI routes to stderr on startup (for Render logs) ===
 import sys
-
-@app.on_event("startup")
-async def print_routes():
-    print("\n=== REGISTERED ROUTES (FastAPI) ===", file=sys.stderr)
-    for route in app.routes:
-        print(f"-> {route.path} [{','.join(route.methods)}]", file=sys.stderr)
-    print("====================================\n", file=sys.stderr)
 
 @app.on_event("startup")
 async def print_routes():
