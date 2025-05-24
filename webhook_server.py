@@ -1011,6 +1011,8 @@ async def telegram_testhook(request: Request):
     print("TEST Telegram update:", data)
     return {"ok": True}
 
+if __name__ == "__main__":
+    uvicorn.run("webhook_server:app", host="0.0.0.0", port=8000, reload=True)
 
 # === Print all FastAPI routes to stderr on startup (for Render logs) ===
 import sys
@@ -1020,4 +1022,11 @@ async def print_routes():
     print("\n=== REGISTERED ROUTES (FastAPI) ===", file=sys.stderr)
     for route in app.routes:
         print(f"-> {route.path} [{','.join(route.methods)}]", file=sys.stderr)
+    print("====================================\n", file=sys.stderr)
+
+@app.on_event("startup")
+async def print_routes():
+    print("\n=== REGISTERED ROUTES (FastAPI) ===", file=sys.stderr)
+    for route in app.routes:
+        print(f"-> {route.path} [{','.join(route.methods)}]", file=sys.stderr)        uvicorn webhook_server:app --reload
     print("====================================\n", file=sys.stderr)
