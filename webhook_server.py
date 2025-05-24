@@ -870,6 +870,14 @@ from fastapi.security import HTTPAuthorizationCredentials
 async def telegram_webhook(secret: str, request: Request):
     # Validate the secret
     if secret != os.getenv("TELEGRAM_WEBHOOK_SECRET"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    
+    # Process the request
+    data = await request.json()
+    print(f"Received Telegram update: {data}")
+    return {"ok": True}
+    # Validate the secret
+    if secret != os.getenv("TELEGRAM_WEBHOOK_SECRET"):
         raise HTTPException(status_code=403, detail="Forbidden")
     
     # Process the request
