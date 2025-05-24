@@ -81,6 +81,11 @@ class OnlyTelegramNetworkWithSecret:
 # Initialize FastAPI application
 app = FastAPI()
 
+# Root endpoint for health checks
+@app.get("/")
+async def root():
+    return {"message": "FastAPI server is running!"}
+
 # === Constants and Enums ===
 class MessageType(str, Enum):
     USER_MESSAGE = "User Message"
@@ -857,22 +862,42 @@ def _process_notion_properties(properties: Dict) -> Dict:
     return processed
 
 # === API Endpoints ===
-@app.post("/telegram/mynewsecret12345")
-async def telegram_webhook(request: Request):
+
+from fastapi import Security
+from fastapi.security import HTTPAuthorizationCredentials
+
+@app.post("/telegram/{secret}")
+async def telegram_webhook(
+    secret: str,
+    credentials: HTTPAuthorizationCredentials = Security(webhook_security),
+    request: Request = None,
+):
+    # Validate URL path secret
+    if secret != config.TELEGRAM_WEBHOOK_SECRET:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized URL secret")
+    
+    # Validate Authorization Bearer token secret (done by webhook_security)
+    if credentials.credentials != config.TELEGRAM_WEBHOOK_SECRET:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized header secret")
+    
     try:
         data = await request.json()
         logger.info(f"Received Telegram update: {data}")
+
         message = data.get("message") or data.get("edited_message")
         if not message:
             return {"status": "ignored"}
+
         chat_id = str(message["chat"]["id"])
         sender = message.get("from", {}).get("username", "User")
         text = message.get("text")
         if not text:
             return {"status": "no_text"}
+
         await telegram_bot.send_typing_indicator(chat_id)
         result = await echo_assistant.process_message(chat_id, text, sender)
         return result
+
     except Exception as e:
         logger.error(f"Webhook processing error: {str(e)}", exc_info=True)
         raise HTTPException(
