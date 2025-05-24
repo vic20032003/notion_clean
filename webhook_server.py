@@ -946,16 +946,13 @@ def _show_routes():
 
 _show_routes()
 
-# --- START PATCH ---
-# Insert after the last API endpoint or at the end of the file
-
-from fastapi import Request
-
+# Basic test POST endpoint for Telegram webhook payloads
 @app.post("/telegram/testhook")
 async def telegram_testhook(request: Request):
-    """Test endpoint: Receives Telegram webhook payload and prints it. Returns a minimal success response."""
+    """
+    Test endpoint: Receives Telegram webhook payload and prints it. Returns a minimal success response.
+    """
     data = await request.json()
     logger.info(f"Received TEST Telegram update: {data}")
     print("TEST Telegram update:", data)
     return {"ok": True}
-# --- END PATCH ---
