@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Request, Body, HTTPException, Depends, status, Security
 from fastapi.security import APIKeyHeader, HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
+import uvicorn
 import os
 import requests
 import sqlite3
@@ -861,28 +862,22 @@ def _process_notion_properties(properties: Dict) -> Dict:
             processed[key] = prop["email"]
     return processed
 
-# === API Endpoints ===
-
 from fastapi import Security
 from fastapi.security import HTTPAuthorizationCredentials
 
+# === Telegram webhook endpoint ===
 @app.post("/telegram/{secret}")
 async def telegram_webhook(secret: str, request: Request):
-    # Validate the secret
-    if secret != os.getenv("TELEGRAM_WEBHOOK_SECRET"):
+    if secret != config.TELEGRAM_WEBHOOK_SECRET:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
-    
-    # Process the request
-    data = await request.json()
-    print(f"Received Telegram update: {data}")
-    return {"ok": True}
-    # Validate the secret
-    if secret != os.getenv("TELEGRAM_WEBHOOK_SECRET"):
-        raise HTTPException(status_code=403, detail="Forbidden")
-    
-    # Process the request
     data = await request.json()
     logger.info(f"Received Telegram update: {data}")
+    # Dispatch to EchoAssistant
+    message = data.get("message") or data.get("edited_message")
+    if message and message.get("text"):
+        chat_id = str(message["chat"]["id"])
+        text = message["text"]
+        await echo_assistant.process_message(chat_id, text)
     return {"ok": True}
 
 @app.post("/query-notion", dependencies=[Depends(get_api_key)])
@@ -992,18 +987,8 @@ async def telegram_testhook(request: Request):
     return {"ok": True}
 
 if __name__ == "__main__":
-    uvicorn.run("webhook_server:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("webhook_server:app", host="127.0.0.1", port=10000, reload=True)
 
-@app.post("/telegram/{secret}")
-async def telegram_webhook(secret: str, request: Request):
-    # Validate the secret
-    if secret != os.getenv("TELEGRAM_WEBHOOK_SECRET"):
-        raise HTTPException(status_code=403, detail="Forbidden")
-    
-    # Process the request
-    data = await request.json()
-    logger.info(f"Received Telegram update: {data}")
-    return {"ok": True}
 
 # === Print all FastAPI routes to stderr on startup (for Render logs) ===
 import sys
