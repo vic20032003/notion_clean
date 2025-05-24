@@ -938,19 +938,24 @@ def _process_notion_properties(properties: Dict) -> Dict:
             processed[key] = prop["url"]
         elif prop_type == "email":
             processed[key] = prop["email"]
+    return processed
 
-            
+# Print all registered API routes at startup to verify correct endpoints are live.
+def _show_routes():
+    print("Registered routes:", [route.path for route in app.routes])
 
-    # Print all registered API routes at startup to verify correct endpoints are live.
-    def _show_routes():
-        print("Registered routes:", [route.path for route in app.routes])
+_show_routes()
 
-    _show_routes(_process_notion_properties)
-    def _process_notion_properties(properties: Dict) -> Dict:
-        # ... as before ...
-        return processed
+# --- START PATCH ---
+# Insert after the last API endpoint or at the end of the file
 
-    def _show_routes():
-        print("Registered routes:", [route.path for route in app.routes])
+from fastapi import Request
 
-    _show_routes()
+@app.post("/telegram/testhook")
+async def telegram_testhook(request: Request):
+    """Test endpoint: Receives Telegram webhook payload and prints it. Returns a minimal success response."""
+    data = await request.json()
+    logger.info(f"Received TEST Telegram update: {data}")
+    print("TEST Telegram update:", data)
+    return {"ok": True}
+# --- END PATCH ---
