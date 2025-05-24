@@ -818,30 +818,61 @@ class EchoAssistant:
 
 echo_assistant = EchoAssistant()
 
+# === Utility: API Key Dependency ===
+from fastapi import Security
+from fastapi.security import APIKeyHeader
+
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+def get_api_key(api_key: str = Depends(api_key_header)):
+    if not api_key or api_key != config.API_SECRET_KEY:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing API Key"
+        )
+    return api_key
+
+# === Utility: Notion Properties Processing ===
+def _process_notion_properties(properties: Dict) -> Dict:
+    processed = {}
+    for key, prop in properties.items():
+        prop_type = prop.get("type")
+        if prop_type == "title":
+            processed[key] = " ".join([t["text"]["content"] for t in prop["title"]])
+        elif prop_type == "rich_text":
+            processed[key] = " ".join([t["text"]["content"] for t in prop["rich_text"]])
+        elif prop_type == "select":
+            processed[key] = prop["select"]["name"] if prop["select"] else None
+        elif prop_type == "multi_select":
+            processed[key] = [item["name"] for item in prop["multi_select"]]
+        elif prop_type == "date":
+            processed[key] = prop["date"]
+        elif prop_type == "checkbox":
+            processed[key] = prop["checkbox"]
+        elif prop_type == "number":
+            processed[key] = prop["number"]
+        elif prop_type == "url":
+            processed[key] = prop["url"]
+        elif prop_type == "email":
+            processed[key] = prop["email"]
+    return processed
+
 # === API Endpoints ===
-@app.post("/telegram/{secret}")
-async def telegram_webhook(secret: str, request: Request):
-    if secret != os.getenv("TELEGRAM_WEBHOOK_SECRET"):
-        raise HTTPException(status_code=401, detail="Unauthorized")
+@app.post("/telegram/mynewsecret12345")
+async def telegram_webhook(request: Request):
     try:
         data = await request.json()
         logger.info(f"Received Telegram update: {data}")
-        
         message = data.get("message") or data.get("edited_message")
         if not message:
             return {"status": "ignored"}
-        
         chat_id = str(message["chat"]["id"])
         sender = message.get("from", {}).get("username", "User")
         text = message.get("text")
-        
         if not text:
             return {"status": "no_text"}
-        
         await telegram_bot.send_typing_indicator(chat_id)
         result = await echo_assistant.process_message(chat_id, text, sender)
         return result
-    
     except Exception as e:
         logger.error(f"Webhook processing error: {str(e)}", exc_info=True)
         raise HTTPException(
@@ -859,15 +890,13 @@ async def query_notion(query: NotionQuery):
             sorts=query.sorts,
             page_size=query.page_size
         )
-        
         processed = []
         for page in results:
             processed.append({
                 "id": page.get("id"),
                 "url": page.get("url"),
-                "properties": self._process_notion_properties(page.get("properties", {}))
+                "properties": _process_notion_properties(page.get("properties", {}))
             })
-        
         return {
             "success": True,
             "count": len(processed),
@@ -888,7 +917,7 @@ async def create_contact(contact: ContactCreate):
                 "Email": {"email": contact.email or ""},
                 "Company": {"rich_text": [{"text": {"content": contact.company or ""}}]},
                 "Notes": {"rich_text": [{"text": {"content": contact.notes or ""}}]},
-                "Tags": {"multi_select": [{"name": tag} for tag in contact.tags or []]}
+                "Tags": {"multi_select": [{"name": tag} for tag in (contact.tags or [])]}
             }
         )
         return {"success": True, "contact_id": result.get("id")}
