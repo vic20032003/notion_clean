@@ -848,7 +848,7 @@ def _process_notion_properties(properties: Dict) -> Dict:
         elif prop_type == "select":
             processed[key] = prop["select"]["name"] if prop["select"] else None
         elif prop_type == "multi_select":
-            processed[key] = [item["name"] for item in prop["multi_select"]]s
+            processed[key] = [item["name"] for item in prop["multi_select"]]
         elif prop_type == "date":
             processed[key] = prop["date"]
         elif prop_type == "checkbox":
