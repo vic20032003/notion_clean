@@ -1010,7 +1010,12 @@ async def telegram_testhook(request: Request):
     return {"ok": True}
 
 if __name__ == "__main__":
-    uvicorn webhook_server:app --reload --host 0.0.0.0 --port 10000
+    uvicorn.run(
+        "webhook_server:app",
+        host="0.0.0.0",
+        port=10000,
+        reload=True
+    )
 
 
 # === Print all FastAPI routes to stderr on startup (for Render logs) ===
