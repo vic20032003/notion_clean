@@ -237,7 +237,7 @@ class TaskCreate(BaseModel):
 class Config:
     def __init__(self):
         self.NOTION_TOKEN = os.getenv("NOTION_TOKEN")
-        self.OPENAI_API_KEY = secrets.token_urlsafe(32)
+        self.OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
         self.TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
         self.API_SECRET_KEY = os.getenv("API_SECRET_KEY")
         self.TELEGRAM_WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET")
