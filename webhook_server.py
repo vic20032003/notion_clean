@@ -107,6 +107,15 @@ async def root():
 async def health():
     return {"status": "OK"}
 
+# Environment info endpoint
+@app.get("/environment")
+async def get_environment():
+    """
+    Return which environment the application is running in: 'Render' or 'Local'.
+    """
+    env = "Render" if os.getenv("RENDER") == "true" else "Local"
+    return {"environment": env}
+
 # === Constants and Enums ===
 class MessageType(str, Enum):
     USER_MESSAGE = "User Message"
@@ -1016,25 +1025,6 @@ async def detect_environment():
     env = "Render" if is_render else "Local"
     logger.info(f"▶️ Running on: {env}")  # You’ll see this in your console or Render logs
 
-if __name__ == "__main__":
-    import os
-    import logging
-
-    logger = logging.getLogger(__name__)
-
-    @app.on_event("startup")
-    async def detect_environment():
-        # Render sets RENDER="true"; locally this will be None
-        is_render = os.getenv("RENDER") == "true"
-        env = "Render" if is_render else "Local"
-        logger.info(f"▶️ Running on: {env}")  # You’ll see this in your console or Render logs
-
-    uvicorn.run(
-        "webhook_server:app",
-        host="0.0.0.0",
-        port=10000,
-        reload=True
-    )
 
 
 # === Print all FastAPI routes to stderr on startup (for Render logs) ===
