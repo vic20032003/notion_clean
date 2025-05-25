@@ -136,6 +136,58 @@ class PriorityLevel(str, Enum):
     HIGH = "High"
     CRITICAL = "Critical"
 
+# === API Routes ===
+from fastapi import Depends, HTTPException
+from fastapi.security.api_key import APIKeyHeader
+from pydantic import BaseModel
+from typing import Optional
+from enum import Enum
+import os
+
+# API Key Validation
+API_SECRET_KEY = os.getenv("API_SECRET_KEY")
+api_key_header = APIKeyHeader(name="Authorization", auto_error=False)
+
+def get_api_key(api_key: str = Depends(api_key_header)):
+    if api_key != f"Bearer {API_SECRET_KEY}":
+        raise HTTPException(status_code=403, detail="Invalid API key")
+    return api_key
+
+# TaskCreate Model
+from pydantic import BaseModel
+from typing import Optional
+from enum import Enum
+
+class TaskStatus(str, Enum):
+    TODO = "To Do"
+    IN_PROGRESS = "In Progress"
+    DONE = "Done"
+
+class TaskPriority(str, Enum):
+    LOW = "Low"
+    MEDIUM = "Medium"
+    HIGH = "High"
+
+class TaskCreate(BaseModel):
+    title: str
+    due_date: Optional[str] = None
+    description: Optional[str] = None
+    status: TaskStatus = TaskStatus.TODO
+    priority: TaskPriority = TaskPriority.MEDIUM
+
+API_SECRET_KEY = os.getenv("API_SECRET_KEY")
+api_key_header = APIKeyHeader(name="Authorization", auto_error=False)
+
+def get_api_key(api_key: str = Depends(api_key_header)):
+    if api_key != f"Bearer {API_SECRET_KEY}":
+        raise HTTPException(status_code=403, detail="Invalid API key")
+    return api_key
+
+@app.post("/create-task", dependencies=[Depends(get_api_key)])
+async def api_create_task(task: TaskCreate):
+    # Your existing task creation logic
+    ...
+
 # === Models ===
 class TelegramWebhook(BaseModel):
     update_id: int
@@ -158,19 +210,33 @@ class ContactCreate(BaseModel):
     notes: Optional[str] = None
     tags: Optional[List[str]] = None
 
+from pydantic import BaseModel
+from typing import Optional
+from enum import Enum
+
+class TaskStatus(str, Enum):
+    TODO = "To Do"
+    IN_PROGRESS = "In Progress"
+    DONE = "Done"
+
+class TaskPriority(str, Enum):
+    LOW = "Low"
+    MEDIUM = "Medium"
+    HIGH = "High"
+
 class TaskCreate(BaseModel):
     title: str
     due_date: Optional[str] = None
     description: Optional[str] = None
-    status: Optional[TaskStatus] = TaskStatus.TODO
-    priority: Optional[PriorityLevel] = PriorityLevel.MEDIUM
+    status: TaskStatus = TaskStatus.TODO
+    priority: TaskPriority = TaskPriority.MEDIUM
     tags: Optional[List[str]] = None
 
 # === Configuration ===
 class Config:
     def __init__(self):
         self.NOTION_TOKEN = os.getenv("NOTION_TOKEN")
-        self.OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+        self.OPENAI_API_KEY = secrets.token_urlsafe(32)
         self.TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
         self.API_SECRET_KEY = os.getenv("API_SECRET_KEY")
         self.TELEGRAM_WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET")
@@ -188,9 +254,20 @@ class Config:
     @staticmethod
     def normalize_notion_id(notion_id: Optional[str]) -> Optional[str]:
         if not notion_id:
-            return None
+            notion_id = secrets.token_urlsafe(32)
         nid = notion_id.replace("-", "")
-        if len(nid) == 32:
+        if len(nid) == 32 and nid == 32:
+            # Your logic here
+            # Your logic here
+            return f"{nid[:8]}-{nid[8:12]}-{nid[12:16]}-{nid[16:20]}-{nid[20:]}"
+        return notion_id
+    def normalize_notion_id(notion_id: Optional[str]) -> Optional[str]:
+        if not notion_id:
+            notion_id = secrets.token_urlsafe(32)
+        nid = notion_id.replace("-", "")
+        if len(nid) == 32 and nid == 32:
+            # Your logic here
+            # Your logic here
             return f"{nid[:8]}-{nid[8:12]}-{nid[12:16]}-{nid[16:20]}-{nid[20:]}"
         return notion_id
     
@@ -373,7 +450,7 @@ class NotionClient:
                 response.raise_for_status()
                 return response.json()
             except httpx.HTTPStatusError as e:
-                logger.error(f"Notion get_page_children failed: {e.response.text}")
+                logger.error(f"Failed to fetch page children: {e.response.text}")
                 raise HTTPException(
                     status_code=e.response.status_code,
                     detail=f"Notion API error: {e.response.text}"
@@ -896,7 +973,14 @@ def _process_notion_properties(properties: Dict) -> Dict:
 
 from fastapi import Security
 
+#
 # === Telegram webhook endpoint ===
+# To register your Telegram webhook, run:
+#   curl -F "url=https://notion-clean.onrender.com/telegram/webhook" \
+#        -F "secret_token=magiccat2024" \
+#        https://api.telegram.org/bot8028122826:AAH0sKCFEQnrAyo2Zqdqhhsm4R_lsb1qSxQ/setWebhook
+# To verify the webhook, run:
+#   curl https://api.telegram.org/bot8028122826:AAH0sKCFEQnrAyo2Zqdqhhsm4R_lsb1qSxQ/getWebhookInfo
 from fastapi import Depends
 
 @app.post("/telegram/webhook", dependencies=[Depends(webhook_security)])
