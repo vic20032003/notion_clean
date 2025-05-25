@@ -1009,7 +1009,26 @@ async def telegram_testhook(request: Request):
     print("TEST Telegram update:", data)
     return {"ok": True}
 
+@app.on_event("startup")
+async def detect_environment():
+    # Render sets RENDER="true"; locally this will be None
+    is_render = os.getenv("RENDER") == "true"
+    env = "Render" if is_render else "Local"
+    logger.info(f"▶️ Running on: {env}")  # You’ll see this in your console or Render logs
+
 if __name__ == "__main__":
+    import os
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    @app.on_event("startup")
+    async def detect_environment():
+        # Render sets RENDER="true"; locally this will be None
+        is_render = os.getenv("RENDER") == "true"
+        env = "Render" if is_render else "Local"
+        logger.info(f"▶️ Running on: {env}")  # You’ll see this in your console or Render logs
+
     uvicorn.run(
         "webhook_server:app",
         host="0.0.0.0",
