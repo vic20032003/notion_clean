@@ -966,6 +966,7 @@ async def api_create_task(task: TaskCreate):
         logger.error(f"API task creation error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
 # === Utility Methods ===
 def _process_notion_properties(properties: Dict) -> Dict:
     processed = {}
@@ -1009,7 +1010,7 @@ async def telegram_testhook(request: Request):
     return {"ok": True}
 
 if __name__ == "__main__":
-    uvicorn.run("webhook_server:app", host="127.0.0.1", port=10000, reload=True)
+    uvicorn webhook_server:app --reload --host 0.0.0.0 --port 10000
 
 
 # === Print all FastAPI routes to stderr on startup (for Render logs) ===
