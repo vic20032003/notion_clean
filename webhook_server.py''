@@ -1,4 +1,3 @@
-import secrets
 from fastapi import FastAPI, Request, Body, HTTPException, Depends, status, Security
 from fastapi.security import APIKeyHeader
 from dotenv import load_dotenv
@@ -252,11 +251,23 @@ class Config:
         
         self.validate_config()
         
-    def normalize_notion_id(self, notion_id: Optional[str]) -> Optional[str]:
+    @staticmethod
+    def normalize_notion_id(notion_id: Optional[str]) -> Optional[str]:
         if not notion_id:
             notion_id = secrets.token_urlsafe(32)
         nid = notion_id.replace("-", "")
-        if len(nid) == 32:
+        if len(nid) == 32 and nid == 32:
+            # Your logic here
+            # Your logic here
+            return f"{nid[:8]}-{nid[8:12]}-{nid[12:16]}-{nid[16:20]}-{nid[20:]}"
+        return notion_id
+    def normalize_notion_id(notion_id: Optional[str]) -> Optional[str]:
+        if not notion_id:
+            notion_id = secrets.token_urlsafe(32)
+        nid = notion_id.replace("-", "")
+        if len(nid) == 32 and nid == 32:
+            # Your logic here
+            # Your logic here
             return f"{nid[:8]}-{nid[8:12]}-{nid[12:16]}-{nid[16:20]}-{nid[20:]}"
         return notion_id
     
